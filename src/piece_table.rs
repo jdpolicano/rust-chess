@@ -13,14 +13,10 @@ fn flip_rank(r: Rank) -> usize {
     return NUM_RANKS - r.to_index() - 1;
 }
 
-fn flip_file(f: File) -> usize {
-    return NUM_FILES - f.to_index() - 1;
-}
-
 impl PieceTable {
     pub fn eval(&self, color: Color, rank: Rank, file: File) -> i32 {
-        let (r_idx, f_idx) = if color == Color::Black {
-            (flip_rank(rank), flip_file(file))
+        let (r_idx, f_idx) = if color == Color::White {
+            (flip_rank(rank), file.to_index())
         } else {
             (rank.to_index(), file.to_index())
         };
@@ -87,3 +83,34 @@ pub const KING_TABLE_END: PieceTable = PieceTable([
     -10, 20, 30, 30, 20, -10, -30, -30, -30, 0, 0, 0, 0, -30, -30, -50, -30, -30, -30, -30, -30,
     -30, -50,
 ]);
+
+mod test {
+    use super::*;
+    use chess::{Board, Color, Square};
+
+    #[test]
+    fn test_piece_table() {
+        let pt = PAWN_TABLE;
+        // in normal direction.
+        for i in 0..8 {
+            for j in 0..8 {
+                let rank_white = Rank::from_index(i);
+                let file_white = File::from_index(j);
+                let rank_black = Rank::from_index(7 - i);
+                let file_black = File::from_index(j);
+                assert_eq!(
+                    pt.eval(Color::White, rank_white, file_white),
+                    pt.eval(Color::Black, rank_black, file_black),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn white_rook_seventh_rank() {
+        let pt = ROOK_TABLE;
+        let rank = Rank::Seventh;
+        let file = File::B;
+        assert_eq!(pt.eval(Color::White, rank, file), 10);
+    }
+}
