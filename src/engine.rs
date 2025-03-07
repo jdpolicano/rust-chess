@@ -1,5 +1,5 @@
 use crate::piece_table::score_piece;
-use chess::{Board, BoardStatus, ChessMove, Color, File, GameResult, MoveGen, Piece, Rank, Square};
+use chess::{Board, ChessMove, Color, File, MoveGen, Piece, Rank, Square};
 use rayon::prelude::*;
 
 type Score = i32;

@@ -1,5 +1,6 @@
 use chess::{
-    get_file, get_rank, Board, BoardStatus, ChessMove, Color, File, Game, MoveGen, Piece, Rank,
+    get_file, get_rank, Board, BoardStatus, ChessMove, Color, File, GameResult, MoveGen, Piece,
+    Rank,
 };
 
 use std::fmt::{Display, Formatter, Result};
@@ -24,7 +25,6 @@ impl Display for Tag {
 pub struct PgnMove {
     m: ChessMove,
     piece: Piece,
-    color: Color,
     pub is_capture: bool,
     pub is_check: bool,
     pub is_ambiguous: bool,
@@ -35,7 +35,6 @@ impl PgnMove {
     pub fn new(
         m: ChessMove,
         piece: Piece,
-        color: Color,
         is_capture: bool,
         is_check: bool,
         is_ambiguous: bool,
@@ -44,7 +43,6 @@ impl PgnMove {
         return Self {
             m,
             piece,
-            color,
             is_capture,
             is_check,
             is_ambiguous,
@@ -53,16 +51,14 @@ impl PgnMove {
     }
     /// This function assumes the board is in the state BEFORE the move is executed.
     pub fn from_board(m: ChessMove, board: &Board) -> Self {
-        let color = board.side_to_move();
         let piece = board.piece_on(m.get_source()).unwrap();
         let is_check = Self::is_check(m, board);
         let is_capture = Self::is_capture(m, board);
-        let is_ambiguous = Self::is_ambiguous(m, board, piece);
         let is_checkmate = Self::is_checkmate(m, board);
+        let is_ambiguous = Self::is_ambiguous(m, board, piece);
         return Self {
             m,
             piece,
-            color,
             is_capture,
             is_check,
             is_ambiguous,
@@ -71,18 +67,15 @@ impl PgnMove {
     }
 
     pub fn to_src_square_str(&self) -> String {
-        return format!("{}{}", self.to_src_rank_str(), self.to_src_file_str());
+        return format!("{}{}", self.to_src_file_str(), self.to_src_rank_str());
     }
 
     pub fn to_dest_square_str(&self) -> String {
-        return format!("{}{}", self.to_src_rank_str(), self.to_src_file_str());
+        return format!("{}{}", self.to_dest_file_str(), self.to_dest_rank_str());
     }
 
-    pub fn to_piece_abbrev(&self) -> Option<String> {
-        if self.piece == Piece::Pawn {
-            return None;
-        }
-        return Some(self.piece.to_string(Color::White));
+    pub fn to_piece_abbrev_str(&self) -> Option<String> {
+        return Self::piece_to_str(self.piece);
     }
 
     pub fn to_src_file_str(&self) -> String {
@@ -101,6 +94,13 @@ impl PgnMove {
         return Self::to_rank_str(self.m.get_dest().get_rank());
     }
 
+    pub fn piece_to_str(p: Piece) -> Option<String> {
+        if p == Piece::Pawn {
+            return None;
+        }
+        return Some(p.to_string(Color::White));
+    }
+
     pub fn to_file_str(f: File) -> String {
         match f {
             File::A => "a".to_string(),
@@ -114,8 +114,8 @@ impl PgnMove {
         }
     }
 
-    pub fn to_rank_str(f: Rank) -> String {
-        return (f.to_index() + 1).to_string();
+    pub fn to_rank_str(r: Rank) -> String {
+        return (r.to_index() + 1).to_string();
     }
 
     pub fn is_castle(&self) -> bool {
@@ -140,6 +140,14 @@ impl PgnMove {
             && self.m.get_dest().get_file() == File::C;
     }
 
+    pub fn is_promotion(&self) -> bool {
+        return self.m.get_promotion().is_some();
+    }
+
+    pub fn promotion_unsafe(&self) -> Piece {
+        return self.m.get_promotion().unwrap();
+    }
+
     pub fn is_capture(m: ChessMove, b: &Board) -> bool {
         let color = b.color_on(m.get_source()).unwrap();
         if let Some(c) = b.color_on(m.get_dest()) {
@@ -162,12 +170,12 @@ impl PgnMove {
     }
 
     fn is_ambiguous(m: ChessMove, b: &Board, p: Piece) -> bool {
+        let target_sq = get_rank(m.get_dest().get_rank()) & get_file(m.get_dest().get_file());
         let mut moves = MoveGen::new_legal(b);
-        let color = b.color_on(m.get_source()).unwrap();
-        let my_pieces = b.color_combined(color) & b.pieces(p); // only my pieces that are the same.
-        moves.set_iterator_mask(my_pieces);
-        for other_move in moves.filter(|m2| !(m2.get_source() == m.get_source())) {
-            if other_move.get_dest() == m.get_dest() {
+        moves.set_iterator_mask(target_sq);
+        for other_move in moves {
+            let other_piece = b.piece_on(other_move.get_source()).unwrap();
+            if other_move != m && other_piece == p {
                 return true;
             }
         }
@@ -197,7 +205,7 @@ impl Display for PgnMove {
             return Ok(());
         }
 
-        if let Some(pname) = self.to_piece_abbrev() {
+        if let Some(pname) = self.to_piece_abbrev_str() {
             write!(f, "{}", pname)?;
         }
         // now handle if you need to write the name of the piece
@@ -213,6 +221,10 @@ impl Display for PgnMove {
 
         write!(f, "{}", self.to_dest_square_str())?;
 
+        if self.is_promotion() {
+            write!(f, "={}", self.promotion_unsafe())?;
+        }
+
         if self.is_checkmate {
             return write!(f, "{}", "#");
         }
@@ -225,22 +237,32 @@ impl Display for PgnMove {
     }
 }
 
-pub enum PgnOutcome {
-    Ongoing,
-    Stalemate,
-    Draw,
-    BlackWins,
-    WhiteWins,
-}
+pub struct PgnOutcome(Option<GameResult>);
 
 impl Display for PgnOutcome {
     fn fmt(&self, f: &mut Formatter) -> Result {
-        match self {
-            PgnOutcome::Ongoing => write!(f, "*"),
-            PgnOutcome::Stalemate | PgnOutcome::Draw => write!(f, "1/2-1/2"),
-            PgnOutcome::BlackWins => write!(f, "0-1"),
-            PgnOutcome::WhiteWins => write!(f, "1-0"),
+        if let Some(r) = self.0 {
+            match r {
+                GameResult::WhiteResigns | GameResult::BlackCheckmates => return write!(f, "0-1"),
+                GameResult::BlackResigns | GameResult::WhiteCheckmates => return write!(f, "1-0"),
+                GameResult::DrawDeclared | GameResult::DrawAccepted | GameResult::Stalemate => {
+                    return write!(f, "1/2-1/2")
+                }
+            }
         }
+        return write!(f, "*");
+    }
+}
+
+impl From<GameResult> for PgnOutcome {
+    fn from(g: GameResult) -> Self {
+        PgnOutcome(Some(g))
+    }
+}
+
+impl From<Option<GameResult>> for PgnOutcome {
+    fn from(g: Option<GameResult>) -> Self {
+        PgnOutcome(g)
     }
 }
 
@@ -248,11 +270,11 @@ pub struct PgnEncoder {
     tags: Vec<Tag>,
     moves: Vec<ChessMove>,
     initial_pos: Board,
-    outcome: PgnOutcome,
+    outcome: Option<PgnOutcome>,
 }
 
 impl PgnEncoder {
-    pub fn new(initial_pos: Board, outcome: PgnOutcome) -> Self {
+    pub fn new(initial_pos: Board, outcome: Option<PgnOutcome>) -> Self {
         return Self {
             tags: Vec::new(),
             moves: Vec::new(),
@@ -267,6 +289,10 @@ impl PgnEncoder {
 
     pub fn add_move(&mut self, m: ChessMove) {
         self.moves.push(m);
+    }
+
+    pub fn set_outcome(&mut self, o: PgnOutcome) {
+        self.outcome = Some(o);
     }
 
     pub fn encode(&self) -> String {
@@ -285,7 +311,27 @@ impl PgnEncoder {
             // now make the move to change the board.
             board = board.make_move_new(*m);
         }
-        pgn.push_str(&self.outcome.to_string());
+
+        if let Some(ref o) = self.outcome {
+            pgn.push_str(&o.to_string());
+        }
+
         return pgn;
+    }
+}
+
+mod test {
+    use chess::{Game, Square};
+
+    use super::*;
+    use std::str::*;
+
+    #[test]
+    fn test_ambiguity() {
+        let board =
+            Board::from_str("r4rk1/ppp2ppp/8/2b1Nbq1/2BnQ3/4B3/PPP2PPP/R4RK1 w - - 1 12").unwrap();
+        let ambiguous_move = ChessMove::from_san(&board, "Rad1").unwrap();
+        let pgn = PgnMove::from_board(ambiguous_move, &board);
+        assert_eq!(pgn.is_ambiguous, true);
     }
 }

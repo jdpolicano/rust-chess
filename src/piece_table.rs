@@ -1,4 +1,4 @@
-use chess::{Color, File, Piece, Rank, NUM_FILES, NUM_RANKS};
+use chess::{Color, File, Piece, Rank, NUM_RANKS};
 // basic piece values.
 pub const PAWN: i32 = 100;
 pub const KNIGHT: i32 = 320;
@@ -86,7 +86,6 @@ pub const KING_TABLE_END: PieceTable = PieceTable([
 
 mod test {
     use super::*;
-    use chess::{Board, Color, Square};
 
     #[test]
     fn test_piece_table() {

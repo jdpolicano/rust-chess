@@ -1,30 +1,20 @@
-use chess::ChessMove;
 use chess_engine::chess_game::ChessGame;
 
 fn main() {
-    //let mut game = ChessGame::new();
+    let mut game = ChessGame::new();
+    game.set_depth(5);
+    while !game.is_over() {
+        // white
+        let next = game.ask_engine();
+        game.make_move(next);
 
-    // for _ in 0..60 {
-    //     let mut next = engine.next_move();
-    //     println!(
-    //         "----WHITE {:?}{:?} {:?}{:?}----",
-    //         next.get_source().get_rank(),
-    //         next.get_source().get_file(),
-    //         next.get_dest().get_rank(),
-    //         next.get_dest().get_file(),
-    //     );
-    //     engine.do_move(next);
-    //     println!("{}", engine.white_pt_score());
-    //     println!("{}", engine.black_pt_score());
-    //     println!("{}", engine.board_string());
+        //black
+        let next = game.ask_engine();
+        game.make_move(next);
+    }
 
-    //     next = engine.next_move();
-    //     println!("----BLACK {:?}----", next);
-    //     engine.do_move(next);
-    //     println!("{}", engine.white_pt_score());
-    //     println!("{}", engine.black_pt_score());
-    //     println!("{}", engine.board_string());
-    // }
+    game.print_board_fen();
+    game.print_pgn();
 }
 
 // fn chess_move_to_pgn(m: ChessMove) -> String {

@@ -1,32 +1,41 @@
-use crate::engine::Engine;
-use chess::{
-    get_file, get_rank, Board, BoardStatus, ChessMove, Color, File, Game, MoveGen, Piece, Rank,
+use crate::{
+    engine::Engine,
+    pgn::{PgnEncoder, PgnMove},
 };
-use std::fmt::{Display, Formatter, Result};
+use chess::{ChessMove, Game};
+
 pub struct ChessGame {
     game: Game,
     engine: Engine,
     debug: bool,
+    pgn_encoder: PgnEncoder,
 }
 
 impl ChessGame {
-    pub fn new(debug: bool) -> Self {
+    pub fn new() -> Self {
         let game = Game::new();
         let engine = Engine::new(3);
+        let pgn_encoder = PgnEncoder::new(game.current_position(), None);
+        let debug = false;
         return Self {
             game,
             engine,
             debug,
+            pgn_encoder,
         };
     }
 
-    pub fn new_with_game(game: Game, debug: bool) -> Self {
-        let engine = Engine::new(3);
-        return Self {
-            game,
-            engine,
-            debug,
-        };
+    pub fn is_over(&mut self) -> bool {
+        if self.game.result().is_some() {
+            return true;
+        }
+
+        if self.game.can_declare_draw() {
+            self.game.declare_draw();
+            return true;
+        }
+
+        return false;
     }
 
     pub fn set_depth(&mut self, d: u8) {
@@ -37,25 +46,28 @@ impl ChessGame {
         self.debug = b;
     }
 
-    pub fn next_move(&mut self) {
-        let next = self.engine.next_move(&self.game.current_position());
-        self.game.make_move(next);
+    pub fn make_move(&mut self, m: ChessMove) {
+        self.pgn_encoder.add_move(m);
+        self.game.make_move(m);
     }
 
-    pub fn print_board(&self) {
+    pub fn ask_engine(&self) -> ChessMove {
+        return self.engine.next_move(&self.game.current_position());
+    }
+
+    pub fn print_board_fen(&self) {
         println!("{}", self.game.current_position().to_string());
     }
 
+    pub fn print_pgn(&mut self) {
+        let gr = self.game.result();
+        self.pgn_encoder.set_outcome(gr.into());
+        println!("{}", self.pgn_encoder.encode());
+    }
+
     pub fn print_move(&self, m: ChessMove) {
-        let source = m.get_source();
-        let dest = m.get_dest();
-        println!(
-            "----{:?}{:?} {:?}{:?}----",
-            source.get_rank(),
-            source.get_file(),
-            dest.get_rank(),
-            dest.get_file(),
-        );
-        println!("{}", m);
+        let board = self.game.current_position();
+        let pgn_move = PgnMove::from_board(m, &board);
+        println!("{}", pgn_move)
     }
 }
