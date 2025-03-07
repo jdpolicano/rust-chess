@@ -99,6 +99,7 @@ fn score_move(mut init_state: MoveState, m: ChessMove) -> MoveState {
     let their_score_diff = calculate_their_score_diff(&init_state.board, m);
 
     init_state.board = init_state.board.make_move_new(m);
+
     update_scores(&mut init_state, color, my_score_diff, their_score_diff);
     return init_state;
 }
