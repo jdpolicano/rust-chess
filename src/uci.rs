@@ -266,9 +266,11 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
     }
 
     fn spawn_engine_thread(&mut self, engine: T, board: Board, opts: NegaMaxOptions) {
+        let start = Instant::now();
         spawn(move || {
             if let Some(mv) = engine.next_move(&board, opts) {
                 println!("bestmove {}", mv);
+                println!("time for uci interface -> {:?}", Instant::now() - start);
             } else {
                 println!("bestmove 0000");
             }

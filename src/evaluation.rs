@@ -3,8 +3,7 @@ use chess::{Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Sq
 use std::ops::Neg;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MIN_SCORE: i32 = (i16::MIN) as i32;
 
@@ -225,9 +224,9 @@ impl NegaMaxOptions {
         }
     }
 
-    pub fn get_mtime(&self) -> Option<Duration> {
+    pub fn get_mtime(&self) -> Option<Instant> {
         if let Some(t) = self.mtime {
-            return Some(Duration::from_millis(t));
+            return Some(Instant::now() + Duration::from_millis(t));
         }
         return None;
     }
@@ -242,48 +241,30 @@ impl NegaMaxOptions {
 pub fn nega_max(state: BoardState, opts: NegaMaxOptions) -> NegaMaxResult {
     let depth = opts.get_depth();
     let time = opts.get_mtime();
-    let mut signal = opts.get_signal();
-
-    if let Some(t) = time {
-        signal = signal.or(Some(Arc::new(AtomicBool::new(false))));
-        spawn_time_checker(t, signal.clone().unwrap());
-    }
+    let signal = opts.get_signal();
 
     let mut best_result = NegaMaxResult::new(0, MIN_SCORE);
 
     for i in 0..=depth {
-        let best_i = nega_max_proper(state.clone(), i, &signal);
+        let best_i = nega_max_proper(state.clone(), i, time, &signal);
         best_result.nodes += best_i.nodes;
         best_result.score = best_result.score.max(best_i.score);
-        if task_must_stop(&signal) {
+        if task_must_stop(time, &signal) {
             break;
         }
     }
-    return best_result;
-}
 
-fn spawn_time_checker(time: Duration, signal: Arc<AtomicBool>) {
-    let _ = std::thread::spawn(move || {
-        let t = time.as_millis() as u64;
-        let buffer_time = t / 9;
-        sleep(Duration::from_millis(t - buffer_time));
-        signal.store(true, Ordering::Relaxed);
-    });
+    return best_result;
 }
 
 fn nega_max_proper(
     state: BoardState,
     depth: i8,
+    time: Option<Instant>,
     signal: &Option<Arc<AtomicBool>>,
 ) -> NegaMaxResult {
-    if depth == 0 {
+    if depth == 0 || task_must_stop(time, signal) {
         return NegaMaxResult::new(0, state.board_score());
-    }
-
-    if let Some(ref s) = signal {
-        if s.load(Ordering::Relaxed) {
-            return NegaMaxResult::new(0, state.board_score());
-        }
     }
 
     let mut max = NegaMaxResult::new(0, MIN_SCORE);
@@ -291,10 +272,10 @@ fn nega_max_proper(
     for m in MoveGen::new_legal(&state.board) {
         let mut copy = state.clone();
         copy.apply_move(m);
-        let local_result = -nega_max_proper(copy, depth - 1, signal);
+        let local_result = -nega_max_proper(copy, depth - 1, time, signal);
         max.nodes += 1;
         max.score = max.score.max(local_result.score);
-        if task_must_stop(signal) {
+        if task_must_stop(time, signal) {
             break;
         }
     }
@@ -397,9 +378,20 @@ pub fn score_board_material(board: &Board) -> (i32, i32) {
     return (white, black);
 }
 
-pub fn task_must_stop(signal: &Option<Arc<AtomicBool>>) -> bool {
+pub fn task_must_stop(time: Option<Instant>, signal: &Option<Arc<AtomicBool>>) -> bool {
+    return signal_must_stop(signal) || time_must_stop(time);
+}
+
+fn signal_must_stop(signal: &Option<Arc<AtomicBool>>) -> bool {
     if let Some(ref s) = signal {
         return s.load(Ordering::Relaxed);
+    }
+    return false;
+}
+
+fn time_must_stop(time: Option<Instant>) -> bool {
+    if let Some(t) = time {
+        return Instant::now() >= t;
     }
     return false;
 }

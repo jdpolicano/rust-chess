@@ -4,6 +4,7 @@ use crate::{
 };
 use chess::{Board, ChessMove, MoveGen};
 use rayon::prelude::*;
+use std::time::Instant;
 
 pub fn get_engine(_: UCIEngineOptions) -> ChessEngine {
     return ChessEngine::new();
@@ -39,19 +40,27 @@ impl ChessEngine {
 
 impl Engine for ChessEngine {
     fn next_move(&self, board: &Board, opts: NegaMaxOptions) -> Option<ChessMove> {
+        let start = Instant::now();
         MoveGen::new_legal(&board)
             .par_bridge()
             .map(|m| {
+                let calc_start = Instant::now();
                 let mut state = self.get_curr_state(&board);
                 state.apply_move(m);
                 let score: NegaMaxResult = -nega_max(state, opts.clone());
+                println!(
+                    "calc time ->{:?} + real calc time ->{:?}",
+                    Instant::now() - calc_start,
+                    Instant::now() - start
+                );
                 return (score, m);
             })
-            .max_by(|(res1, _), (res2, _)| res1.score.cmp(&res2.score))
-            .map(|(best, m)| {
-                if self.debug {
-                    self.print_best_move(best.score, m);
-                }
+            .max_by(|(res1, _), (res2, _)| {
+                println!("max_by time ->{:?}", Instant::now() - start);
+                res1.score.cmp(&res2.score)
+            })
+            .map(|(_, m)| {
+                println!("next move time ->{:?}", Instant::now() - start);
                 return m;
             })
     }
