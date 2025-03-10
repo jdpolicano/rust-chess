@@ -1,8 +1,11 @@
 use crate::piece_table::{piece_value, score_piece_position};
 use chess::{Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square};
+use rayon::spawn;
+use std::ops::Neg;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 const MIN_SCORE: i32 = (i16::MIN) as i32;
 
@@ -144,69 +147,158 @@ impl BoardState {
     }
 }
 
-#[derive(Clone)]
-pub enum StopCondition {
-    Depth(i8),
-    Time(Instant),
-    Signal(Arc<AtomicBool>),
+pub struct NegaMaxResult {
+    pub nodes: u64,
+    pub score: i32,
+}
+
+impl NegaMaxResult {
+    pub fn new(nodes: u64, score: i32) -> Self {
+        return Self { nodes, score };
+    }
+    pub fn max_score(self, other: Self) -> Self {
+        if other.score > self.score {
+            return other;
+        }
+        return self;
+    }
+}
+
+impl Neg for NegaMaxResult {
+    type Output = NegaMaxResult;
+    fn neg(self) -> Self::Output {
+        return NegaMaxResult {
+            nodes: self.nodes,
+            score: -self.score,
+        };
+    }
 }
 
 #[derive(Clone)]
-pub struct EvalStopper {
-    pub stopper: StopCondition,
-    pub depth: i8,
+pub enum NegaMaxDepth {
+    Infinite,
+    Finite(i8),
 }
 
-impl EvalStopper {
-    pub fn new(stopper: StopCondition) -> Self {
-        return Self { stopper, depth: 0 };
-    }
+#[derive(Clone)]
+pub struct NegaMaxOptions {
+    depth: NegaMaxDepth,
+    mtime: Option<u64>,
+    signal: Option<Arc<AtomicBool>>,
+}
 
-    pub fn depth(&self) -> i8 {
-        return self.depth;
-    }
-
-    pub fn should_stop(&self) -> bool {
-        match self.stopper {
-            StopCondition::Depth(d) => return self.depth >= d,
-            StopCondition::Time(t) => return Instant::now() >= t,
-            StopCondition::Signal(ref s) => return s.load(Ordering::Relaxed),
+impl NegaMaxOptions {
+    pub fn new() -> Self {
+        Self {
+            depth: NegaMaxDepth::Infinite,
+            mtime: None,
+            signal: None,
         }
     }
 
-    pub fn increment(&mut self) -> &mut Self {
-        self.depth += 1;
+    pub fn depth(mut self, depth: i8) -> Self {
+        self.depth = NegaMaxDepth::Finite(depth);
         return self;
     }
 
-    pub fn decrement(&mut self) -> &mut Self {
-        self.depth -= 1;
+    pub fn mtime(mut self, limit: u64) -> Self {
+        self.mtime = Some(limit);
         return self;
+    }
+
+    pub fn signal(mut self, signal: Arc<AtomicBool>) -> Self {
+        self.signal = Some(signal);
+        return self;
+    }
+
+    pub fn is_finite(&self) -> bool {
+        match self.depth {
+            NegaMaxDepth::Infinite => return self.mtime.is_some(),
+            _ => true,
+        }
+    }
+
+    pub fn get_depth(&self) -> i8 {
+        match self.depth {
+            // this might as well be infinite.
+            NegaMaxDepth::Infinite => i8::MAX,
+            NegaMaxDepth::Finite(d) => d,
+        }
+    }
+
+    pub fn get_mtime(&self) -> Option<Duration> {
+        if let Some(t) = self.mtime {
+            return Some(Duration::from_millis(t));
+        }
+        return None;
+    }
+
+    pub fn get_signal(&self) -> Option<Arc<AtomicBool>> {
+        return self.signal.clone();
     }
 }
 
-/// A struct that holds the state of the board and the positional scores of the pieces
-/// for both white and black
-pub fn nega_max(state: BoardState, stopper: &mut EvalStopper) -> i32 {
-    if stopper.should_stop() {
-        return state.board_score();
+/// The default negamax with rely on iterative deepening in order to support time limits.
+/// If you need to just search an exact depth it might be more efficent to call nega_max_with_depth instead.
+pub fn nega_max(state: BoardState, opts: NegaMaxOptions) -> NegaMaxResult {
+    let depth = opts.get_depth();
+    let time = opts.get_mtime();
+    let mut signal = opts.get_signal();
+
+    if let Some(t) = time {
+        println!("signal starting state -> {:?}", signal);
+        signal = signal.or(Some(Arc::new(AtomicBool::new(false))));
+        spawn_time_checker(t, signal.clone().unwrap());
     }
 
-    let mut max = MIN_SCORE;
-    let mut n_moves = 0;
-    let stopper = stopper.increment();
+    let mut best_result = NegaMaxResult::new(0, MIN_SCORE);
+
+    for i in 0..=depth {
+        let best_i = nega_max_proper(state.clone(), i, signal.clone());
+        best_result.nodes += best_i.nodes;
+        best_result.score = best_result.score.max(best_i.score);
+        if let Some(ref s) = signal {
+            // println!("nega_max: singal : {:?}", signal);
+            if s.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+    }
+    return best_result;
+}
+
+fn spawn_time_checker(time: Duration, signal: Arc<AtomicBool>) {
+    spawn(move || {
+        let end = Instant::now() + time;
+        while end > Instant::now() {}
+        signal.store(true, Ordering::Relaxed);
+        println!("time checker is done");
+    })
+}
+
+fn nega_max_proper(state: BoardState, depth: i8, signal: Option<Arc<AtomicBool>>) -> NegaMaxResult {
+    if depth == 0 {
+        return NegaMaxResult::new(0, state.board_score());
+    }
+
+    if let Some(ref s) = signal {
+        if s.load(Ordering::Relaxed) {
+            return NegaMaxResult::new(0, state.board_score());
+        }
+    }
+
+    let mut max = NegaMaxResult::new(0, MIN_SCORE);
 
     for m in MoveGen::new_legal(&state.board) {
         let mut copy = state.clone();
         copy.apply_move(m);
-        let score = -nega_max(copy, stopper);
-        max = max.max(score);
-        n_moves += 1;
+        let local_result = -nega_max_proper(copy, depth - 1, signal.clone());
+        max.nodes += 1;
+        max.score = max.score.max(local_result.score);
     }
 
-    let _ = stopper.decrement();
-    if n_moves == 0 {
-        return state.terminal(state.board.status());
+    if max.nodes == 0 {
+        return NegaMaxResult::new(0, state.terminal(state.board.status()));
     }
 
     return max;

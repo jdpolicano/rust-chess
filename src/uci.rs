@@ -1,8 +1,9 @@
 use crate::engine::Engine;
-use crate::evaluation::{EvalStopper, StopCondition};
-use chess::ChessMove;
+use crate::evaluation::NegaMaxOptions;
+use chess::{Board, ChessMove};
 use std::collections::HashMap;
 use std::io::{stdin, stdout, BufRead, BufReader, Write};
+use std::str::FromStr;
 use std::thread::spawn;
 use std::time::{Duration, Instant};
 
@@ -19,6 +20,7 @@ pub struct UCIEngine<T: Engine + Send + 'static> {
     expect_ucinewgame: bool,
     reg_later: bool,
     debug: bool,
+    board: Board,
 }
 
 impl<T: Engine + Send + 'static> UCIEngine<T> {
@@ -35,6 +37,7 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
             expect_ucinewgame: false,
             reg_later: false,
             debug: false,
+            board: Board::default(),
         }
     }
 
@@ -132,7 +135,6 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
     /// Handles the "ucinewgame" command by reinitializing the engine.
     fn handle_ucinewgame(&mut self) -> Result<(), std::io::Error> {
         self.expect_ucinewgame = true;
-        self.engine = Some((self.initializer)(self.opts.clone()));
         Ok(())
     }
 
@@ -161,9 +163,7 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
                 tokens = &tokens[1..];
             }
             let fen = fen_parts.join("");
-            if let Some(ref mut engine) = self.engine {
-                engine.set_position(&fen);
-            }
+            self.board = Board::from_str(&fen).unwrap();
             if tokens.len() != 0 && tokens[0] == "moves" {
                 self.apply_moves(&tokens[1..]);
             }
@@ -173,20 +173,21 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
 
     /// Applies a list of move strings to the engine by parsing them into ChessMove objects.
     fn apply_moves(&mut self, moves: &[&str]) {
-        let moves: Vec<ChessMove> = moves
-            .iter()
-            .map(|s| s.parse::<ChessMove>())
-            .filter_map(Result::ok)
-            .collect();
-        if let Some(ref mut engine) = self.engine {
-            engine.play_moves(&moves);
+        for mv in moves {
+            match ChessMove::from_str(mv) {
+                Ok(m) => self.board = self.board.make_move_new(m),
+                Err(e) => {
+                    let _ = write!(self.stdout, "Err({e}) invalid uci move {mv}");
+                    break;
+                }
+            }
         }
     }
 
     /// Handles the "go" command. This implementation ignores extra parameters (e.g. time, depth)
     /// and simply queries the engine for its next move.
     fn handle_go(&mut self, tokens: &[&str]) -> Result<(), std::io::Error> {
-        let mut time: Option<Instant> = None;
+        let mut time: Option<u64> = None;
         let mut depth: Option<i8> = None;
         let mut iter = tokens.iter();
 
@@ -214,7 +215,6 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
                 }
                 "depth" => {
                     // depth
-                    println!("DEEP!");
                     if let Some(d) = iter.next() {
                         if let Ok(d) = d.parse::<i8>() {
                             depth = Some(d);
@@ -231,9 +231,9 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
                 }
                 "movetime" => {
                     // move time
-                    if let Some(ms) = iter.next() {
-                        if let Ok(ms) = ms.parse::<u64>() {
-                            time = Some(Instant::now() + std::time::Duration::from_millis(ms));
+                    if let Some(ms_str) = iter.next() {
+                        if let Ok(ms) = ms_str.parse::<u64>() {
+                            time = Some(ms);
                         }
                     };
                 }
@@ -250,13 +250,14 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
         }
 
         if let Some(engine) = self.engine.take() {
-            let mut stopper = EvalStopper::new(StopCondition::Depth(i8::MAX)); // this is basically infinite.
-            if let Some(d) = depth {
-                stopper = EvalStopper::new(StopCondition::Depth(d));
-            } else if let Some(t) = time {
-                stopper = EvalStopper::new(StopCondition::Time(t));
+            let mut opts = NegaMaxOptions::new();
+            if let Some(t) = time {
+                opts = opts.mtime(t);
             }
-            self.spawn_engine_thread(engine, stopper);
+            if let Some(d) = depth {
+                opts = opts.depth(d);
+            }
+            self.spawn_engine_thread(engine, self.board, opts);
         } else {
             writeln!(self.stdout, "bestmove 0000")?;
         }
@@ -264,9 +265,9 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
         Ok(())
     }
 
-    fn spawn_engine_thread(&mut self, engine: T, stopper: EvalStopper) {
+    fn spawn_engine_thread(&mut self, engine: T, board: Board, opts: NegaMaxOptions) {
         spawn(move || {
-            if let Some(mv) = engine.next_move(stopper) {
+            if let Some(mv) = engine.next_move(&board, opts) {
                 println!("bestmove {}", mv);
             } else {
                 println!("bestmove 0000");
