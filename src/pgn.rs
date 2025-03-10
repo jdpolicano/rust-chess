@@ -303,7 +303,7 @@ impl PgnEncoder {
         }
         for (i, m) in self.moves.iter().enumerate() {
             if i % 2 == 0 {
-                pgn.push_str(&format!("{}. ", i / 2 + 1));
+                pgn.push_str(&format!("{}.", i / 2 + 1));
             }
             // encode the move relative to the board.
             let pgn_move = PgnMove::from_board(*m, &board);

@@ -158,11 +158,12 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
         } else if tokens[0] == "fen" {
             // The FEN string may contain spaces – it is taken until the optional "moves" token.
             let mut fen_parts = Vec::new();
-            while tokens[0] != "moves" {
+            tokens = &tokens[1..];
+            while tokens.len() != 0 && tokens[0] != "moves" {
                 fen_parts.push(tokens[0]);
                 tokens = &tokens[1..];
             }
-            let fen = fen_parts.join("");
+            let fen = fen_parts.join(" ");
             self.board = Board::from_str(&fen).unwrap();
             if tokens.len() != 0 && tokens[0] == "moves" {
                 self.apply_moves(&tokens[1..]);
@@ -266,11 +267,9 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
     }
 
     fn spawn_engine_thread(&mut self, engine: T, board: Board, opts: NegaMaxOptions) {
-        let start = Instant::now();
         spawn(move || {
             if let Some(mv) = engine.next_move(&board, opts) {
                 println!("bestmove {}", mv);
-                println!("time for uci interface -> {:?}", Instant::now() - start);
             } else {
                 println!("bestmove 0000");
             }

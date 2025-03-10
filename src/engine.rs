@@ -25,10 +25,6 @@ impl ChessEngine {
         return Self { debug };
     }
 
-    fn print_best_move(&self, score: i32, m: ChessMove) {
-        println!("Best move: {} with score {}", m, score);
-    }
-
     fn get_curr_state(&self, board: &Board) -> BoardState {
         return BoardState::from_board(*board);
     }
@@ -36,32 +32,36 @@ impl ChessEngine {
     pub fn set_debug(&mut self, b: bool) {
         self.debug = b;
     }
+
+    fn aggregate_results(&self, results: Vec<(NegaMaxResult, ChessMove)>) -> Option<ChessMove> {
+        if results.len() < 1 {
+            return None;
+        }
+        // this should be guarenteed to be at least length 1.
+        let (mut max_result, mut best_move) = results[0].clone();
+        let mut nodes = max_result.nodes;
+        for (result, m) in &results[1..] {
+            nodes += result.nodes;
+            if result.score > max_result.score {
+                max_result = result.clone();
+                best_move = *m;
+            }
+        }
+        return Some(best_move);
+    }
 }
 
 impl Engine for ChessEngine {
     fn next_move(&self, board: &Board, opts: NegaMaxOptions) -> Option<ChessMove> {
-        let start = Instant::now();
-        MoveGen::new_legal(&board)
+        let ideal_moves = MoveGen::new_legal(&board)
             .par_bridge()
             .map(|m| {
-                let calc_start = Instant::now();
                 let mut state = self.get_curr_state(&board);
                 state.apply_move(m);
                 let score: NegaMaxResult = -nega_max(state, opts.clone());
-                println!(
-                    "calc time ->{:?} + real calc time ->{:?}",
-                    Instant::now() - calc_start,
-                    Instant::now() - start
-                );
                 return (score, m);
             })
-            .max_by(|(res1, _), (res2, _)| {
-                println!("max_by time ->{:?}", Instant::now() - start);
-                res1.score.cmp(&res2.score)
-            })
-            .map(|(_, m)| {
-                println!("next move time ->{:?}", Instant::now() - start);
-                return m;
-            })
+            .collect();
+        return self.aggregate_results(ideal_moves);
     }
 }

@@ -1,5 +1,6 @@
 use crate::piece_table::{piece_value, score_piece_position};
 use chess::{Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square};
+use std::collections::HashMap;
 use std::ops::Neg;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -116,13 +117,8 @@ impl BoardState {
     // convert a checkmate (no move min) to a score for the side to move
     pub fn terminal(&self, status: BoardStatus) -> i32 {
         match status {
-            BoardStatus::Checkmate => {
-                if self.board.side_to_move() == Color::White {
-                    return MIN_SCORE;
-                }
-                return -MIN_SCORE;
-            }
-            _ => return 0,
+            BoardStatus::Checkmate => MIN_SCORE,
+            _ => 0,
         }
     }
 
@@ -145,6 +141,7 @@ impl BoardState {
     }
 }
 
+#[derive(Clone)]
 pub struct NegaMaxResult {
     pub nodes: u64,
     pub score: i32,
@@ -181,7 +178,7 @@ pub enum NegaMaxDepth {
 #[derive(Clone)]
 pub struct NegaMaxOptions {
     depth: NegaMaxDepth,
-    mtime: Option<u64>,
+    mtime: Option<Instant>,
     signal: Option<Arc<AtomicBool>>,
 }
 
@@ -200,7 +197,7 @@ impl NegaMaxOptions {
     }
 
     pub fn mtime(mut self, limit: u64) -> Self {
-        self.mtime = Some(limit);
+        self.mtime = Some(Instant::now() + Duration::from_millis(limit));
         return self;
     }
 
@@ -225,10 +222,7 @@ impl NegaMaxOptions {
     }
 
     pub fn get_mtime(&self) -> Option<Instant> {
-        if let Some(t) = self.mtime {
-            return Some(Instant::now() + Duration::from_millis(t));
-        }
-        return None;
+        return self.mtime;
     }
 
     pub fn get_signal(&self) -> Option<Arc<AtomicBool>> {
@@ -242,12 +236,12 @@ pub fn nega_max(state: BoardState, opts: NegaMaxOptions) -> NegaMaxResult {
     let depth = opts.get_depth();
     let time = opts.get_mtime();
     let signal = opts.get_signal();
+    let mut cache = HashMap::new();
 
     let mut best_result = NegaMaxResult::new(0, MIN_SCORE);
 
-    for i in 0..=depth {
-        let best_i = nega_max_proper(state.clone(), i, time, &signal);
-        best_result.nodes += best_i.nodes;
+    for _ in 0..=depth {
+        let best_i = nega_max_proper(state.clone(), &mut cache, depth, time, &signal);
         best_result.score = best_result.score.max(best_i.score);
         if task_must_stop(time, &signal) {
             break;
@@ -259,6 +253,7 @@ pub fn nega_max(state: BoardState, opts: NegaMaxOptions) -> NegaMaxResult {
 
 fn nega_max_proper(
     state: BoardState,
+    cache: &mut HashMap<u64, u8>,
     depth: i8,
     time: Option<Instant>,
     signal: &Option<Arc<AtomicBool>>,
@@ -272,11 +267,11 @@ fn nega_max_proper(
     for m in MoveGen::new_legal(&state.board) {
         let mut copy = state.clone();
         copy.apply_move(m);
-        let local_result = -nega_max_proper(copy, depth - 1, time, signal);
-        max.nodes += 1;
+        let local_result = -nega_max_proper(copy, cache, depth - 1, time, signal);
+        max.nodes += local_result.nodes + 1;
         max.score = max.score.max(local_result.score);
         if task_must_stop(time, signal) {
-            break;
+            return max;
         }
     }
 
