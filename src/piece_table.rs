@@ -14,7 +14,7 @@ fn flip_rank(r: Rank) -> usize {
 }
 
 impl PieceTable {
-    pub fn eval(&self, color: Color, rank: Rank, file: File) -> i32 {
+    pub fn eval_position(&self, color: Color, rank: Rank, file: File) -> i32 {
         let (r_idx, f_idx) = if color == Color::White {
             (flip_rank(rank), file.to_index())
         } else {
@@ -24,19 +24,36 @@ impl PieceTable {
         return self.at_index(rc);
     }
 
+    pub fn eval_with_piece(&self, piece: Piece, color: Color, rank: Rank, file: File) -> i32 {
+        let piece_value = piece_value(piece);
+        let position_value = self.eval_position(color, rank, file);
+        return piece_value + position_value;
+    }
+
     pub fn at_index(&self, idx: usize) -> i32 {
         return self.0[idx];
     }
 }
 
-pub fn score_piece(piece: Piece, color: Color, rank: Rank, file: File) -> i32 {
+pub fn score_piece_position(piece: Piece, color: Color, rank: Rank, file: File) -> i32 {
     match piece {
-        Piece::Pawn => PAWN_TABLE.eval(color, rank, file),
-        Piece::Knight => KNIGHT_TABLE.eval(color, rank, file),
-        Piece::Bishop => BISHOP_TABLE.eval(color, rank, file),
-        Piece::Rook => ROOK_TABLE.eval(color, rank, file),
-        Piece::Queen => QUEEN_TABLE.eval(color, rank, file),
-        Piece::King => KING_TABLE_MID.eval(color, rank, file),
+        Piece::Pawn => PAWN_TABLE.eval_with_piece(piece, color, rank, file),
+        Piece::Knight => KNIGHT_TABLE.eval_with_piece(piece, color, rank, file),
+        Piece::Bishop => BISHOP_TABLE.eval_with_piece(piece, color, rank, file),
+        Piece::Rook => ROOK_TABLE.eval_with_piece(piece, color, rank, file),
+        Piece::Queen => QUEEN_TABLE.eval_with_piece(piece, color, rank, file),
+        Piece::King => KING_TABLE_MID.eval_with_piece(piece, color, rank, file),
+    }
+}
+
+pub fn piece_value(piece: Piece) -> i32 {
+    match piece {
+        Piece::Pawn => PAWN,
+        Piece::Knight => KNIGHT,
+        Piece::Bishop => BISHOP,
+        Piece::Rook => ROOK,
+        Piece::Queen => QUEEN,
+        Piece::King => KING,
     }
 }
 
@@ -98,8 +115,8 @@ mod test {
                 let rank_black = Rank::from_index(7 - i);
                 let file_black = File::from_index(j);
                 assert_eq!(
-                    pt.eval(Color::White, rank_white, file_white),
-                    pt.eval(Color::Black, rank_black, file_black),
+                    pt.eval_position(Color::White, rank_white, file_white),
+                    pt.eval_position(Color::Black, rank_black, file_black),
                 );
             }
         }
@@ -110,6 +127,6 @@ mod test {
         let pt = ROOK_TABLE;
         let rank = Rank::Seventh;
         let file = File::B;
-        assert_eq!(pt.eval(Color::White, rank, file), 10);
+        assert_eq!(pt.eval_position(Color::White, rank, file), 10);
     }
 }

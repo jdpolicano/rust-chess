@@ -1,20 +1,10 @@
-use chess_engine::chess_game::ChessGame;
+use rust_engine::{engine::get_engine, uci::UCIEngine};
 
 fn main() {
-    let mut game = ChessGame::new();
-    game.set_depth(5);
-    while !game.is_over() {
-        // white
-        let next = game.ask_engine();
-        game.make_move(next);
-
-        //black
-        let next = game.ask_engine();
-        game.make_move(next);
+    let mut uci_engine = UCIEngine::new(get_engine);
+    if let Err(e) = uci_engine.run() {
+        eprintln!("{}", e);
     }
-
-    game.print_board_fen();
-    game.print_pgn();
 }
 
 // fn chess_move_to_pgn(m: ChessMove) -> String {
