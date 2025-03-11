@@ -1,11 +1,13 @@
 use crate::engine::Engine;
 use crate::evaluation::NegaMaxOptions;
-use chess::{Board, ChessMove};
+use crate::pgn::PgnEncoder;
+use chess::{Board, ChessMove, Game};
 use std::collections::HashMap;
+use std::fs::create_dir_all;
 use std::io::{stdin, stdout, BufRead, BufReader, Write};
+use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
 use std::thread::spawn;
-use std::time::{Duration, Instant};
 
 pub type UCIEngineOptions = HashMap<String, String>;
 
@@ -149,7 +151,6 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
         if self.engine.is_none() {
             self.engine = Some((self.initializer)(self.opts.clone()));
         }
-
         if tokens[0] == "startpos" {
             // Start from the default starting position.
             if tokens.len() > 1 && tokens[1] == "moves" {
@@ -291,5 +292,232 @@ impl<T: Engine + Send + 'static> UCIEngine<T> {
     /// Handles the "debug" command (e.g. "debug on" or "debug off") and updates the internal flag.
     fn handle_debug(&mut self, _tokens: &[&str]) -> Result<(), std::io::Error> {
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct UCITestEngine {
+    outdir: String,
+    iterations: u32,
+    mtime: u64, // milliseconds for each engine to think.
+}
+
+impl UCITestEngine {
+    pub fn new(outdir: String, iterations: u32, mtime: u64) -> Self {
+        Self {
+            outdir,
+            iterations,
+            mtime,
+        }
+    }
+
+    pub fn run(&self, eng1_path: String, eng2_path: String) -> Result<(), std::io::Error> {
+        let eng1 = std::process::Command::new(eng1_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .env_remove("RUST_CHESS_TEST_MODE")
+            .spawn()?;
+        let eng2 = Command::new(eng2_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .env_remove("RUST_CHESS_TEST_MODE")
+            .spawn()?;
+        return self.run_tests(eng1, eng2);
+    }
+
+    pub fn run_tests(&self, eng1: Child, eng2: Child) -> Result<(), std::io::Error> {
+        create_dir_all(&self.outdir)?;
+        let eng1_id = eng1.id();
+        let eng2_id = eng2.id();
+        let mut white = eng1;
+        let mut black = eng2;
+        self.setup_engine(&mut white)?;
+        self.setup_engine(&mut black)?;
+        let mut game = Game::new();
+        let mut encoder = PgnEncoder::new(game.current_position().clone(), None);
+        let mut eng1_wins = 0;
+        let mut eng2_wins = 0;
+        let mut white_wins = 0;
+        let mut black_wins = 0;
+        let mut draws = 0;
+
+        for game_num in 0..self.iterations {
+            while game.result().is_none() && !game.can_declare_draw() {
+                self.send_postion_fen(&mut white, &game.current_position().to_string())?;
+                self.send_go(&mut white)?;
+                let white_move = self.wait_for_bestmove(&mut white)?;
+                game.make_move(white_move);
+                encoder.add_move(white_move);
+
+                if game.result().is_some() || game.can_declare_draw() {
+                    break;
+                }
+
+                self.send_postion_fen(&mut black, &game.current_position().to_string())?;
+                self.send_go(&mut black)?;
+                let black_move = self.wait_for_bestmove(&mut black)?;
+                game.make_move(black_move);
+                encoder.add_move(black_move);
+
+                if game.result().is_some() || game.can_declare_draw() {
+                    break;
+                }
+            }
+
+            if let Some(result) = game.result() {
+                match result {
+                    chess::GameResult::WhiteCheckmates => {
+                        white_wins += 1;
+                        if white.id() == eng1_id {
+                            eng1_wins += 1;
+                        } else {
+                            eng2_wins += 1;
+                        }
+                    }
+                    chess::GameResult::BlackCheckmates => {
+                        black_wins += 1;
+                        if black.id() == eng1_id {
+                            eng1_wins += 1;
+                        } else {
+                            eng2_wins += 1;
+                        }
+                    }
+                    _ => draws += 1,
+                };
+            } else {
+                draws += 1;
+            }
+
+            let pgn = encoder.encode();
+            let filename = format!("{}/game_{}.pgn", self.outdir, game_num);
+            Self::write_pgn_evidence(filename, pgn)?;
+
+            let tmp = black;
+            black = white;
+            white = tmp;
+            game = Game::new();
+            encoder = PgnEncoder::new(game.current_position().clone(), None);
+            println!("Game {} complete", game_num);
+            println!("Engine 1 wins: {}", eng1_wins);
+            println!("Engine 2 wins: {}", eng2_wins);
+            println!("Draws: {}", draws);
+        }
+
+        let results_filename = format!("{}/results.txt", self.outdir);
+        Self::write_results(
+            results_filename,
+            eng1_wins,
+            eng2_wins,
+            draws,
+            self.iterations,
+        )?;
+        Ok(())
+    }
+
+    fn setup_engine(&self, engine: &mut Child) -> Result<(), std::io::Error> {
+        let mut stdin = engine.stdin.as_ref().unwrap();
+        let mut stdout = BufReader::new(engine.stdout.as_mut().unwrap());
+        writeln!(stdin, "uci")?;
+        stdin.flush()?;
+        let mut line = String::new();
+        stdout.read_line(&mut line)?;
+        while !line.contains("uciok") {
+            print!("engout -> {}", line);
+            line.clear();
+            if stdout.read_line(&mut line)? == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "Unexpected EOF",
+                ));
+            }
+        }
+        print!("engout -> {}", line);
+        Ok(())
+    }
+
+    fn send_postion_fen(&self, engine: &mut Child, position: &str) -> Result<(), std::io::Error> {
+        let mut stdin = engine.stdin.as_ref().unwrap();
+        println!("sending position \"{}\"", position);
+        writeln!(stdin, "position fen {}", position)?;
+        stdin.flush()?;
+        Ok(())
+    }
+
+    fn send_go(&self, engine: &mut Child) -> Result<(), std::io::Error> {
+        let mut stdin = engine.stdin.as_ref().unwrap();
+        writeln!(stdin, "go movetime {}", self.mtime)?;
+        stdin.flush()?;
+        Ok(())
+    }
+
+    fn wait_for_bestmove(&self, engine: &mut Child) -> Result<ChessMove, std::io::Error> {
+        let mut stdout = BufReader::new(engine.stdout.as_mut().unwrap());
+        let mut line = String::new();
+        stdout.read_line(&mut line)?;
+        while !line.contains("bestmove") {
+            print!("engout -> {}", line);
+            line.clear();
+            if stdout.read_line(&mut line)? == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "Unexpected EOF",
+                ));
+            }
+        }
+        print!("engout -> {}", line);
+        let parts: Vec<&str> = line.trim().split_whitespace().collect();
+        if parts.len() < 2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid bestmove response",
+            ));
+        }
+
+        ChessMove::from_str(parts[1]).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid bestmove response")
+        })
+    }
+
+    fn write_results(
+        path: String,
+        eng1_wins: i32,
+        eng2_wins: i32,
+        draws: i32,
+        game_num: u32,
+    ) -> Result<(), std::io::Error> {
+        let mut file = std::fs::File::create(path)?;
+        writeln!(file, "Results for {} games", game_num)?;
+        writeln!(file, "Engine 1 wins: {}", eng1_wins)?;
+        writeln!(file, "Engine 2 wins: {}", eng2_wins)?;
+        writeln!(file, "Draws: {}", draws)?;
+        Ok(())
+    }
+
+    fn write_pgn_evidence(path: String, pgn: String) -> Result<(), std::io::Error> {
+        let mut file = std::fs::File::create(path)?;
+        writeln!(file, "{}", pgn)?;
+        Ok(())
+    }
+
+    pub fn set_outdir(&mut self, outdir: String) {
+        self.outdir = outdir;
+    }
+
+    pub fn set_iterations(&mut self, iterations: u32) {
+        self.iterations = iterations;
+    }
+
+    pub fn set_mtime(&mut self, mtime: u64) {
+        self.mtime = mtime;
+    }
+}
+
+impl Default for UCITestEngine {
+    fn default() -> Self {
+        Self {
+            outdir: "./tmp/games".to_string(),
+            iterations: 10,
+            mtime: 2500,
+        }
     }
 }

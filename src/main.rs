@@ -1,38 +1,24 @@
 use chess::{ChessMove, Game};
-use rust_engine::{
-    engine::{get_engine, Engine},
-    evaluation::NegaMaxOptions,
-    pgn::PgnEncoder,
-};
-use std::collections::HashMap;
+use rust_engine::engine::get_engine;
+use rust_engine::uci::{UCIEngine, UCIEngineOptions, UCITestEngine};
 
 fn main() {
-    let mut game = Game::new();
-    let mut encoder = PgnEncoder::new(game.current_position().clone(), None);
-    let eng_opts1 = NegaMaxOptions::new().depth(3);
-    let eng_opts2 = NegaMaxOptions::new().depth(6);
-    let eng = get_engine(HashMap::new());
-    let mut i = 0;
-    loop {
-        println!("move {i}");
-        i += 1;
-        let m = eng.next_move(&game.current_position(), eng_opts1.clone());
-        game.make_move(m.unwrap());
-        encoder.add_move(m.unwrap());
-        if game.result().is_some() || game.can_declare_draw() {
-            break;
+    let is_test_engine = "RUST_CHESS_TEST_MODE";
+    let env = std::env::var(is_test_engine);
+    if env.is_ok() {
+        println!("running in chess engine mode...");
+        let test_engine = UCITestEngine::default();
+        if let Err(e) = test_engine.run(
+            "./target/release/rust-engine".to_string(),
+            "./target/release/rust-engine".to_string(),
+        ) {
+            eprintln!("Error: {}", e);
         }
-        let m = eng.next_move(&game.current_position(), eng_opts2.clone());
-        game.make_move(m.unwrap());
-        encoder.add_move(m.unwrap());
-        if game.result().is_some() || game.can_declare_draw() {
-            break;
-        }
+        return;
     }
+    let mut engine = UCIEngine::new(get_engine);
 
-    println!("{}", encoder.encode());
+    if let Err(e) = engine.run() {
+        eprintln!("Error: {}", e);
+    }
 }
-
-// fn chess_move_to_pgn(m: ChessMove) -> String {
-//     //
-// }

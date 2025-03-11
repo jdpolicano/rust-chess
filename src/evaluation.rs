@@ -1,12 +1,13 @@
 use crate::piece_table::{piece_value, score_piece_position};
-use chess::{Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square};
+use chess::{Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square, EMPTY};
+use rayon::{yield_local, yield_now};
 use std::collections::HashMap;
 use std::ops::Neg;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const MIN_SCORE: i32 = (i16::MIN) as i32;
+pub const MIN_SCORE: i32 = (i16::MIN) as i32;
 
 pub struct PieceEvent {
     pub piece: Piece,
@@ -122,10 +123,11 @@ impl BoardState {
         }
     }
 
-    pub fn apply_move(&mut self, m: ChessMove) {
-        let info = MoveInfo::from_move(m, &self.board);
-        self.score_position_change(&info);
-        self.board = self.board.make_move_new(m);
+    pub fn apply_move(&self, m: ChessMove) -> Self {
+        let mut next = self.clone();
+        next.score_position_change(&MoveInfo::from_move(m, &next.board));
+        next.board = next.board.make_move_new(m);
+        return next;
     }
 
     pub fn score_position_change(&mut self, info: &MoveInfo) {
@@ -145,17 +147,31 @@ impl BoardState {
 pub struct NegaMaxResult {
     pub nodes: u64,
     pub score: i32,
+    pub is_complete: bool,
 }
 
 impl NegaMaxResult {
     pub fn new(nodes: u64, score: i32) -> Self {
-        return Self { nodes, score };
+        return Self {
+            nodes,
+            score,
+            is_complete: false,
+        };
     }
+
     pub fn max_score(self, other: Self) -> Self {
         if other.score > self.score {
             return other;
         }
         return self;
+    }
+
+    pub fn complete(self) -> Self {
+        return Self {
+            nodes: self.nodes,
+            score: self.score,
+            is_complete: true,
+        };
     }
 }
 
@@ -165,6 +181,7 @@ impl Neg for NegaMaxResult {
         return NegaMaxResult {
             nodes: self.nodes,
             score: -self.score,
+            is_complete: self.is_complete,
         };
     }
 }
@@ -191,19 +208,30 @@ impl NegaMaxOptions {
         }
     }
 
-    pub fn depth(mut self, depth: i8) -> Self {
-        self.depth = NegaMaxDepth::Finite(depth);
-        return self;
+    pub fn depth(&self, depth: i8) -> Self {
+        return Self {
+            depth: NegaMaxDepth::Finite(depth),
+            mtime: self.mtime,
+            signal: self.signal.clone(),
+        };
     }
 
-    pub fn mtime(mut self, limit: u64) -> Self {
-        self.mtime = Some(Instant::now() + Duration::from_millis(limit));
-        return self;
+    pub fn mtime(&self, limit: u64) -> Self {
+        // self.mtime = Some(Instant::now() + Duration::from_millis(limit));
+        return Self {
+            depth: self.depth.clone(),
+            mtime: Some(Instant::now() + Duration::from_millis(limit)),
+            signal: self.signal.clone(),
+        };
     }
 
-    pub fn signal(mut self, signal: Arc<AtomicBool>) -> Self {
-        self.signal = Some(signal);
-        return self;
+    pub fn signal(&self, signal: Arc<AtomicBool>) -> Self {
+        // self.signal = Some(signal);
+        return Self {
+            depth: self.depth.clone(),
+            mtime: self.mtime,
+            signal: Some(signal),
+        };
     }
 
     pub fn is_finite(&self) -> bool {
@@ -236,50 +264,48 @@ pub fn nega_max(state: BoardState, opts: NegaMaxOptions) -> NegaMaxResult {
     let depth = opts.get_depth();
     let time = opts.get_mtime();
     let signal = opts.get_signal();
-    let mut cache = HashMap::new();
-
-    let mut best_result = NegaMaxResult::new(0, MIN_SCORE);
-
-    for _ in 0..=depth {
-        let best_i = nega_max_proper(state.clone(), &mut cache, depth, time, &signal);
-        best_result.score = best_result.score.max(best_i.score);
-        if task_must_stop(time, &signal) {
-            break;
-        }
-    }
-
-    return best_result;
+    return nega_max_proper(state, depth, &time, &signal);
 }
 
 fn nega_max_proper(
     state: BoardState,
-    cache: &mut HashMap<u64, u8>,
     depth: i8,
-    time: Option<Instant>,
+    time: &Option<Instant>,
     signal: &Option<Arc<AtomicBool>>,
 ) -> NegaMaxResult {
+    let base_score = state.board_score();
+
+    // if we can't go further, return the score of the board as is.
     if depth == 0 || task_must_stop(time, signal) {
-        return NegaMaxResult::new(0, state.board_score());
+        return NegaMaxResult::new(0, base_score).complete();
     }
 
     let mut max = NegaMaxResult::new(0, MIN_SCORE);
 
     for m in MoveGen::new_legal(&state.board) {
-        let mut copy = state.clone();
-        copy.apply_move(m);
-        let local_result = -nega_max_proper(copy, cache, depth - 1, time, signal);
+        let local_result = -nega_max_proper(state.apply_move(m), depth - 1, time, signal);
+
         max.nodes += local_result.nodes + 1;
-        max.score = max.score.max(local_result.score);
+        if local_result.score > max.score {
+            max.score = local_result.score;
+        }
+        // if we didn't get to the end of the loop, we need
+        // to return the score for the board when we entered,
+        // because we don't know what the best move for the opponent would have been.
         if task_must_stop(time, signal) {
-            return max;
+            return NegaMaxResult::new(0, base_score);
         }
     }
 
+    // handle the case where the board was in checkmate or stalemate (i.e., had no moves)
     if max.nodes == 0 {
-        return NegaMaxResult::new(0, state.terminal(state.board.status()));
+        if *state.board.checkers() == EMPTY {
+            return NegaMaxResult::new(0, 0).complete();
+        }
+        return NegaMaxResult::new(0, MIN_SCORE).complete();
     }
 
-    return max;
+    return max.complete();
 }
 
 /// returns the change in positional score after a capture relative to the opponent
@@ -373,7 +399,7 @@ pub fn score_board_material(board: &Board) -> (i32, i32) {
     return (white, black);
 }
 
-pub fn task_must_stop(time: Option<Instant>, signal: &Option<Arc<AtomicBool>>) -> bool {
+pub fn task_must_stop(time: &Option<Instant>, signal: &Option<Arc<AtomicBool>>) -> bool {
     return signal_must_stop(signal) || time_must_stop(time);
 }
 
@@ -384,9 +410,9 @@ fn signal_must_stop(signal: &Option<Arc<AtomicBool>>) -> bool {
     return false;
 }
 
-fn time_must_stop(time: Option<Instant>) -> bool {
+fn time_must_stop(time: &Option<Instant>) -> bool {
     if let Some(t) = time {
-        return Instant::now() >= t;
+        return Instant::now() >= *t;
     }
     return false;
 }
