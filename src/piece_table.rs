@@ -102,10 +102,9 @@ pub const KING_TABLE_END: PieceTable = PieceTable([
 ]);
 
 mod test {
-    
-
     #[test]
     fn test_piece_table() {
+        use super::*;
         let pt = PAWN_TABLE;
         // in normal direction.
         for i in 0..8 {
@@ -124,6 +123,7 @@ mod test {
 
     #[test]
     fn white_rook_seventh_rank() {
+        use super::*;
         let pt = ROOK_TABLE;
         let rank = Rank::Seventh;
         let file = File::B;

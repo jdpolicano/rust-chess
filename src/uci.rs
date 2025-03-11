@@ -20,8 +20,8 @@ pub struct UCIEngine<T: Engine + Send + 'static> {
     name: String,
     author: String,
     expect_ucinewgame: bool,
-    reg_later: bool,
-    debug: bool,
+    pub reg_later: bool,
+    pub debug: bool,
     board: Board,
 }
 
@@ -328,7 +328,6 @@ impl UCITestEngine {
     pub fn run_tests(&self, eng1: Child, eng2: Child) -> Result<(), std::io::Error> {
         create_dir_all(&self.outdir)?;
         let eng1_id = eng1.id();
-        let eng2_id = eng2.id();
         let mut white = eng1;
         let mut black = eng2;
         self.setup_engine(&mut white)?;
@@ -401,6 +400,8 @@ impl UCITestEngine {
             println!("Engine 1 wins: {}", eng1_wins);
             println!("Engine 2 wins: {}", eng2_wins);
             println!("Draws: {}", draws);
+            println!("White wins: {}", white_wins);
+            println!("Black wins: {}", black_wins);
         }
 
         let results_filename = format!("{}/results.txt", self.outdir);

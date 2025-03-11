@@ -321,13 +321,12 @@ impl PgnEncoder {
 }
 
 mod test {
-    
-
-    
-    
 
     #[test]
     fn test_ambiguity() {
+        use super::PgnMove;
+        use chess::{Board, ChessMove};
+        use std::str::FromStr;
         let board =
             Board::from_str("r4rk1/ppp2ppp/8/2b1Nbq1/2BnQ3/4B3/PPP2PPP/R4RK1 w - - 1 12").unwrap();
         let ambiguous_move = ChessMove::from_san(&board, "Rad1").unwrap();
