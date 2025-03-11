@@ -1,7 +1,5 @@
 use crate::piece_table::{piece_value, score_piece_position};
 use chess::{Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square, EMPTY};
-use rayon::{yield_local, yield_now};
-use std::collections::HashMap;
 use std::ops::Neg;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

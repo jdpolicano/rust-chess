@@ -102,7 +102,7 @@ pub const KING_TABLE_END: PieceTable = PieceTable([
 ]);
 
 mod test {
-    use super::*;
+    
 
     #[test]
     fn test_piece_table() {

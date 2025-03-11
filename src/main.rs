@@ -1,6 +1,5 @@
-use chess::{ChessMove, Game};
 use rust_engine::engine::get_engine;
-use rust_engine::uci::{UCIEngine, UCIEngineOptions, UCITestEngine};
+use rust_engine::uci::{UCIEngine, UCITestEngine};
 
 fn main() {
     let is_test_engine = "RUST_CHESS_TEST_MODE";

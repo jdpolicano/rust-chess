@@ -321,10 +321,10 @@ impl PgnEncoder {
 }
 
 mod test {
-    use chess::{Game, Square};
+    
 
-    use super::*;
-    use std::str::*;
+    
+    
 
     #[test]
     fn test_ambiguity() {
