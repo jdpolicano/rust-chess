@@ -1,0 +1,2 @@
+This is the baseline engine that can support time based, depth based, and signal based termination.
+This binary also includes a simple test engine to test target againsts itself.

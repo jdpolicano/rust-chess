@@ -1,11 +1,13 @@
 use crate::piece_table::{piece_value, score_piece_position};
 use chess::{Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square, EMPTY};
+use std::collections::HashMap;
 use std::ops::Neg;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const MIN_SCORE: i32 = (i16::MIN) as i32;
+pub const CHECKMATE_SCORE: i32 = MIN_SCORE + 128;
 
 pub struct PieceEvent {
     pub piece: Piece,
@@ -73,7 +75,7 @@ impl MoveInfo {
         };
     }
 
-    pub fn from_move(m: ChessMove, b: &Board) -> Self {
+    pub fn from_move(m: &ChessMove, b: &Board) -> Self {
         let from = m.get_source();
         let to = m.get_dest();
         let piece = b.piece_on(from).unwrap();
@@ -121,10 +123,10 @@ impl BoardState {
         }
     }
 
-    pub fn apply_move(&self, m: ChessMove) -> Self {
+    pub fn apply_move(&self, m: &ChessMove) -> Self {
         let mut next = self.clone();
         next.score_position_change(&MoveInfo::from_move(m, &next.board));
-        next.board = next.board.make_move_new(m);
+        next.board = next.board.make_move_new(*m);
         return next;
     }
 
@@ -141,7 +143,7 @@ impl BoardState {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct NegaMaxResult {
     pub nodes: u64,
     pub score: i32,
@@ -149,18 +151,17 @@ pub struct NegaMaxResult {
 }
 
 impl NegaMaxResult {
-    pub fn new(nodes: u64, score: i32) -> Self {
+    pub fn new(score: i32) -> Self {
         return Self {
-            nodes,
+            nodes: 1,
             score,
             is_complete: false,
         };
     }
 
-    pub fn max_score(self, other: Self) -> Self {
-        if other.score > self.score {
-            return other;
-        }
+    pub fn max_join(mut self, other: Self) -> Self {
+        self.nodes += other.nodes;
+        self.score = self.score.max(other.score);
         return self;
     }
 
@@ -170,6 +171,10 @@ impl NegaMaxResult {
             score: self.score,
             is_complete: true,
         };
+    }
+    pub fn nodes(mut self, n: u64) -> Self {
+        self.nodes = n;
+        return self;
     }
 }
 
@@ -262,48 +267,58 @@ pub fn nega_max(state: BoardState, opts: NegaMaxOptions) -> NegaMaxResult {
     let depth = opts.get_depth();
     let time = opts.get_mtime();
     let signal = opts.get_signal();
-    return nega_max_proper(state, depth, &time, &signal);
+    return nega_max_proper(state, depth, MIN_SCORE, -MIN_SCORE, &time, &signal);
 }
 
 fn nega_max_proper(
     state: BoardState,
     depth: i8,
+    mut alpha: i32,
+    beta: i32,
     time: &Option<Instant>,
     signal: &Option<Arc<AtomicBool>>,
 ) -> NegaMaxResult {
     let base_score = state.board_score();
-
     // if we can't go further, return the score of the board as is.
-    if depth == 0 || task_must_stop(time, signal) {
-        return NegaMaxResult::new(0, base_score).complete();
+    if depth == 0 {
+        if state.board.status() == BoardStatus::Checkmate {
+            return NegaMaxResult::new(CHECKMATE_SCORE).complete();
+        }
+        return NegaMaxResult::new(base_score).complete();
     }
 
-    let mut max = NegaMaxResult::new(0, MIN_SCORE);
+    // if we have to leave without getting deep enough, return the score of the board as is (incomplete)
+    if task_must_stop(time, signal) {
+        return NegaMaxResult::new(base_score);
+    }
+
+    let mut max = NegaMaxResult::new(MIN_SCORE);
 
     for m in MoveGen::new_legal(&state.board) {
-        let local_result = -nega_max_proper(state.apply_move(m), depth - 1, time, signal);
-
-        max.nodes += local_result.nodes + 1;
-        if local_result.score > max.score {
-            max.score = local_result.score;
+        let local = -nega_max_proper(state.apply_move(&m), depth - 1, -beta, -alpha, time, signal);
+        max = max.max_join(local);
+        alpha = alpha.max(max.score);
+        if alpha >= beta {
+            return max.complete();
         }
         // if we didn't get to the end of the loop, we need
         // to return the score for the board when we entered,
         // because we don't know what the best move for the opponent would have been.
         if task_must_stop(time, signal) {
-            return NegaMaxResult::new(0, base_score);
+            return NegaMaxResult::new(base_score).max_join(max);
         }
     }
 
     // handle the case where the board was in checkmate or stalemate (i.e., had no moves)
-    if max.nodes == 0 {
+    if max.nodes == 1 {
         if *state.board.checkers() == EMPTY {
-            return NegaMaxResult::new(0, 0).complete();
+            return NegaMaxResult::new(0).complete();
+        } else {
+            return NegaMaxResult::new(CHECKMATE_SCORE - depth as i32).complete();
         }
-        return NegaMaxResult::new(0, MIN_SCORE).complete();
     }
 
-    return max.complete();
+    return max.complete(); //
 }
 
 /// returns the change in positional score after a capture relative to the opponent
@@ -413,4 +428,121 @@ fn time_must_stop(time: &Option<Instant>) -> bool {
         return Instant::now() >= *t;
     }
     return false;
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    // use crate::piece_table::{PAWN, PAWN_TABLE};
+    use chess::{Board, File, Rank};
+    use std::str::FromStr;
+
+    #[test]
+    fn negamax_result() {
+        // test join
+        let a = NegaMaxResult::new(10);
+        let b = NegaMaxResult::new(20);
+        let c = a.max_join(b);
+        assert_eq!(c.score, 20);
+        assert_eq!(c.nodes, 2);
+
+        // test neg
+        let d = -c;
+        assert_eq!(d.score, -20);
+
+        // test complete
+        let e = NegaMaxResult::new(30);
+        let f = e.complete();
+        assert_eq!(f.is_complete, true);
+
+        // test nodes
+        let g = NegaMaxResult::new(40).nodes(100);
+        assert_eq!(g.nodes, 100);
+    }
+
+    #[test]
+    fn move_info_captures() {
+        // test join
+        let board =
+            Board::from_str("rnbqkbnr/ppp2ppp/4p3/3p4/4P3/3P4/PPP2PPP/RNBQKBNR w KQkq - 0 1")
+                .unwrap();
+        let m = ChessMove::from_san(&board, "exd5").unwrap();
+        let info = MoveInfo::from_move(&m, &board);
+        assert_eq!(info.move_events.capture.is_some(), true);
+        assert_eq!(info.move_events.promotion.is_none(), true);
+
+        let black_loss = score_piece_position(Piece::Pawn, Color::Black, Rank::Fifth, File::D);
+        assert_eq!(black_loss, 120);
+
+        let white_gain = score_piece_position(Piece::Pawn, Color::White, Rank::Fifth, File::D)
+            - score_piece_position(Piece::Pawn, Color::White, Rank::Fourth, File::E);
+        assert_eq!(white_gain, 5);
+    }
+
+    #[test]
+    fn move_info_promo_capture() {
+        // test join
+        let board = Board::from_str("k2r4/2P1K3/8/8/8/8/8/8 w - - 0 1").unwrap();
+        // pawn f2 to e8 capturing rook and promoting to queen
+        let m = ChessMove::new(
+            Square::make_square(Rank::Seventh, File::C),
+            Square::make_square(Rank::Eighth, File::D),
+            Some(Piece::Queen),
+        );
+        let info = MoveInfo::from_move(&m, &board);
+        assert_eq!(info.move_events.capture.is_some(), true);
+        assert_eq!(info.move_events.promotion.is_some(), true);
+        board
+            .make_move_new(m)
+            .piece_on(Square::make_square(Rank::Eighth, File::D))
+            .map(|p| {
+                assert_eq!(p, Piece::Queen);
+            });
+    }
+
+    #[test]
+    fn mate_in_one() {
+        let board = Board::from_str("5k2/QR6/8/8/6K1/8/8/8 w - - 0 1").unwrap();
+        let state = BoardState::from_board(board);
+        let d = 1;
+        let result = nega_max(state, NegaMaxOptions::new().depth(d));
+        assert_eq!(result.score, -CHECKMATE_SCORE);
+    }
+
+    #[test]
+    fn mate_in_two() {
+        let board = Board::from_str("r6k/4Rppp/8/8/8/8/8/4R2K w - - 0 1").unwrap();
+        let state = BoardState::from_board(board);
+        let d1 = 1;
+        let d2 = 4;
+        let result1 = nega_max(state.clone(), NegaMaxOptions::new().depth(d1));
+        let result2 = nega_max(state.clone(), NegaMaxOptions::new().depth(d2));
+        assert!(result1.score < result2.score);
+        assert_eq!(result2.score, -CHECKMATE_SCORE + 1); // mate in 2 should be slightly better than other mates
+    }
+
+    #[test]
+    fn mate_in_two_v_mate_in_one() {
+        let board = Board::from_str("r6k/4Rppp/8/8/8/8/7Q/1B2R2K w - - 0 1").unwrap();
+        let state = BoardState::from_board(board);
+        let d = 3;
+        let result = nega_max(state.clone(), NegaMaxOptions::new().depth(d));
+        assert_eq!(result.score, -CHECKMATE_SCORE + 2); // mate in 1 should be slightly better than mate in two
+    }
+
+    #[test]
+    fn black_white_parity() {
+        let board_for_white =
+            Board::from_str("r1bqkb1r/pppppppp/2n2n2/8/3P4/4P3/PPP2PPP/RNBQKBNR w KQkq - 0 1")
+                .unwrap();
+        let same_board_for_black_but_reversed =
+            Board::from_str("rnbqkbnr/ppp2ppp/4p3/3p4/8/2N2N2/PPPPPPPP/R1BQKB1R b KQkq - 0 1")
+                .unwrap();
+        let state_white = BoardState::from_board(board_for_white);
+        let state_black = BoardState::from_board(same_board_for_black_but_reversed);
+        let d = 3;
+        let result1 = nega_max(state_white, NegaMaxOptions::new().depth(d));
+        let result2 = nega_max(state_black, NegaMaxOptions::new().depth(d));
+        assert!(result1.score == result2.score);
+    }
 }

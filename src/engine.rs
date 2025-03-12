@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     evaluation::{nega_max, task_must_stop, BoardState, NegaMaxOptions, NegaMaxResult, MIN_SCORE},
     uci::UCIEngineOptions,
@@ -31,26 +33,6 @@ impl ChessEngine {
     pub fn set_debug(&mut self, b: bool) {
         self.debug = b;
     }
-
-    fn aggregate_results(&self, results: Vec<(NegaMaxResult, ChessMove)>) -> Option<ChessMove> {
-        if results.len() < 1 {
-            return None;
-        }
-        let mut max_result = NegaMaxResult::new(0, MIN_SCORE);
-        let mut best_move = None;
-        let mut is_incomplete = false;
-        for (result, m) in results {
-            if !result.is_complete {
-                is_incomplete = true;
-            }
-            max_result.nodes += result.nodes;
-            if result.score > max_result.score {
-                max_result.score = result.score;
-                best_move = Some(m);
-            }
-        }
-        return if is_incomplete { None } else { best_move };
-    }
 }
 
 // impl Engine for ChessEngine {
@@ -77,28 +59,19 @@ impl Engine for ChessEngine {
         let max_depth = opts.get_depth();
         let global_time = opts.get_mtime();
         let signal = opts.get_signal();
-
         // Iterative deepening loop in the main thread:
-        for current_depth in 0..=max_depth {
+        let state = Self::get_curr_state(board);
+        for current_depth in 1..=max_depth {
             // Dispatch parallel search for each legal move:
             let results: Vec<(NegaMaxResult, ChessMove)> = legal_moves
                 .par_iter()
-                .map(|&m| {
-                    let state = Self::get_curr_state(board).apply_move(m);
-                    // Use the fixed-depth search here.
-                    let score = -nega_max(state, opts.depth(current_depth));
-                    (score, m)
-                })
+                .map(|m| search_move(&state, opts.depth(current_depth), m))
                 .collect();
 
-            // Aggregate the results for this iteration.
-            if let Some(iter_best) = self.aggregate_results(results) {
-                // Optionally, you could compare with the previous iteration's best result.
-                best_move = Some(iter_best);
-                // Optionally log the current iteration’s depth or nodes visited.
-                println!("Iteration at depth {} completed.", current_depth);
-            }
-
+            aggregate_results(results).map(|m| {
+                println!("info depth {}", current_depth);
+                best_move = Some(m);
+            });
             // Check overall time and break if reached.
             if task_must_stop(&global_time, &signal) {
                 break;
@@ -107,4 +80,35 @@ impl Engine for ChessEngine {
 
         best_move
     }
+}
+
+fn search_move(
+    state: &BoardState,
+    opts: NegaMaxOptions,
+    m: &ChessMove,
+) -> (NegaMaxResult, ChessMove) {
+    let score = -nega_max(state.apply_move(m), opts);
+    (score, *m)
+}
+
+fn aggregate_results(results: Vec<(NegaMaxResult, ChessMove)>) -> Option<ChessMove> {
+    if results.len() < 1 {
+        return None;
+    }
+    let mut max_score = MIN_SCORE;
+    let mut total_nodes = 0;
+    let mut best_move = None;
+    let mut is_incomplete = false;
+    for (result, m) in results {
+        if !result.is_complete {
+            is_incomplete = true;
+        }
+        total_nodes += result.nodes;
+        if result.score > max_score {
+            max_score = result.score;
+            best_move = Some(m);
+        }
+    }
+    println!("info nodes {}", total_nodes);
+    return if is_incomplete { None } else { best_move };
 }
