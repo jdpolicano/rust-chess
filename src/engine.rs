@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    evaluation::{nega_max, task_must_stop, BoardState, NegaMaxOptions, NegaMaxResult, MIN_SCORE},
+    evaluation::{nega_max, task_must_stop, NegaMaxOptions, NegaMaxResult, SearchState, MIN_SCORE},
     uci::UCIEngineOptions,
 };
 use chess::{Board, ChessMove, MoveGen};
@@ -26,8 +26,8 @@ impl ChessEngine {
         return Self { debug };
     }
 
-    fn get_curr_state(board: &Board) -> BoardState {
-        return BoardState::from_board(*board);
+    fn get_state(board: &Board) -> SearchState {
+        return SearchState::from_board(*board);
     }
 
     pub fn set_debug(&mut self, b: bool) {
@@ -60,7 +60,7 @@ impl Engine for ChessEngine {
         let global_time = opts.get_mtime();
         let signal = opts.get_signal();
         // Iterative deepening loop in the main thread:
-        let state = Self::get_curr_state(board);
+        let state = Self::get_state(board);
         for current_depth in 1..=max_depth {
             // Dispatch parallel search for each legal move:
             let results: Vec<(NegaMaxResult, ChessMove)> = legal_moves
@@ -83,7 +83,7 @@ impl Engine for ChessEngine {
 }
 
 fn search_move(
-    state: &BoardState,
+    state: &SearchState,
     opts: NegaMaxOptions,
     m: &ChessMove,
 ) -> (NegaMaxResult, ChessMove) {

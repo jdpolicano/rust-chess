@@ -1,6 +1,5 @@
 use crate::piece_table::{piece_value, score_piece_position};
 use chess::{Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square, EMPTY};
-use std::collections::HashMap;
 use std::ops::Neg;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -88,13 +87,13 @@ impl MoveInfo {
 }
 
 #[derive(Clone, Debug)]
-pub struct BoardState {
+pub struct SearchState {
     pub board: Board,
     pub white_position: i32,
     pub black_position: i32,
 }
 
-impl BoardState {
+impl SearchState {
     pub fn new(board: Board, white_position: i32, black_position: i32) -> Self {
         return Self {
             board,
@@ -141,6 +140,10 @@ impl BoardState {
             self.white_position += capture_diff;
         }
     }
+
+    pub fn status(&self) -> BoardStatus {
+        return self.board.status();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -172,6 +175,7 @@ impl NegaMaxResult {
             is_complete: true,
         };
     }
+
     pub fn nodes(mut self, n: u64) -> Self {
         self.nodes = n;
         return self;
@@ -237,13 +241,6 @@ impl NegaMaxOptions {
         };
     }
 
-    pub fn is_finite(&self) -> bool {
-        match self.depth {
-            NegaMaxDepth::Infinite => return self.mtime.is_some(),
-            _ => true,
-        }
-    }
-
     pub fn get_depth(&self) -> i8 {
         match self.depth {
             // this might as well be infinite.
@@ -263,7 +260,7 @@ impl NegaMaxOptions {
 
 /// The default negamax with rely on iterative deepening in order to support time limits.
 /// If you need to just search an exact depth it might be more efficent to call nega_max_with_depth instead.
-pub fn nega_max(state: BoardState, opts: NegaMaxOptions) -> NegaMaxResult {
+pub fn nega_max(state: SearchState, opts: NegaMaxOptions) -> NegaMaxResult {
     let depth = opts.get_depth();
     let time = opts.get_mtime();
     let signal = opts.get_signal();
@@ -271,41 +268,34 @@ pub fn nega_max(state: BoardState, opts: NegaMaxOptions) -> NegaMaxResult {
 }
 
 fn nega_max_proper(
-    state: BoardState,
+    state: SearchState,
     depth: i8,
     mut alpha: i32,
     beta: i32,
     time: &Option<Instant>,
     signal: &Option<Arc<AtomicBool>>,
 ) -> NegaMaxResult {
-    let base_score = state.board_score();
+    let base_score = NegaMaxResult::new(state.board_score());
     // if we can't go further, return the score of the board as is.
     if depth == 0 {
         if state.board.status() == BoardStatus::Checkmate {
             return NegaMaxResult::new(CHECKMATE_SCORE).complete();
         }
-        return NegaMaxResult::new(base_score).complete();
-    }
-
-    // if we have to leave without getting deep enough, return the score of the board as is (incomplete)
-    if task_must_stop(time, signal) {
-        return NegaMaxResult::new(base_score);
+        return base_score.complete();
     }
 
     let mut max = NegaMaxResult::new(MIN_SCORE);
 
     for m in MoveGen::new_legal(&state.board) {
         let local = -nega_max_proper(state.apply_move(&m), depth - 1, -beta, -alpha, time, signal);
-        max = max.max_join(local);
+        max.nodes += local.nodes;
+        max.score = max.score.max(local.score);
         alpha = alpha.max(max.score);
         if alpha >= beta {
             return max.complete();
         }
-        // if we didn't get to the end of the loop, we need
-        // to return the score for the board when we entered,
-        // because we don't know what the best move for the opponent would have been.
         if task_must_stop(time, signal) {
-            return NegaMaxResult::new(base_score).max_join(max);
+            return base_score.max_join(max);
         }
     }
 
@@ -503,7 +493,7 @@ mod test {
     #[test]
     fn mate_in_one() {
         let board = Board::from_str("5k2/QR6/8/8/6K1/8/8/8 w - - 0 1").unwrap();
-        let state = BoardState::from_board(board);
+        let state = SearchState::from_board(board);
         let d = 1;
         let result = nega_max(state, NegaMaxOptions::new().depth(d));
         assert_eq!(result.score, -CHECKMATE_SCORE);
@@ -512,7 +502,7 @@ mod test {
     #[test]
     fn mate_in_two() {
         let board = Board::from_str("r6k/4Rppp/8/8/8/8/8/4R2K w - - 0 1").unwrap();
-        let state = BoardState::from_board(board);
+        let state = SearchState::from_board(board);
         let d1 = 1;
         let d2 = 4;
         let result1 = nega_max(state.clone(), NegaMaxOptions::new().depth(d1));
@@ -524,7 +514,7 @@ mod test {
     #[test]
     fn mate_in_two_v_mate_in_one() {
         let board = Board::from_str("r6k/4Rppp/8/8/8/8/7Q/1B2R2K w - - 0 1").unwrap();
-        let state = BoardState::from_board(board);
+        let state = SearchState::from_board(board);
         let d = 3;
         let result = nega_max(state.clone(), NegaMaxOptions::new().depth(d));
         assert_eq!(result.score, -CHECKMATE_SCORE + 2); // mate in 1 should be slightly better than mate in two
@@ -538,8 +528,8 @@ mod test {
         let same_board_for_black_but_reversed =
             Board::from_str("rnbqkbnr/ppp2ppp/4p3/3p4/8/2N2N2/PPPPPPPP/R1BQKB1R b KQkq - 0 1")
                 .unwrap();
-        let state_white = BoardState::from_board(board_for_white);
-        let state_black = BoardState::from_board(same_board_for_black_but_reversed);
+        let state_white = SearchState::from_board(board_for_white);
+        let state_black = SearchState::from_board(same_board_for_black_but_reversed);
         let d = 3;
         let result1 = nega_max(state_white, NegaMaxOptions::new().depth(d));
         let result2 = nega_max(state_black, NegaMaxOptions::new().depth(d));
