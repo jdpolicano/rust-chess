@@ -16,7 +16,7 @@ pub enum UciParseError {
     InvalidUciMove,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UciCommand {
     Uci,
     IsReady,
@@ -190,8 +190,7 @@ impl ThreadHandler<(), UciCommand> for UciHandler {
     }
 
     fn quit(self) {
-        if let Err(e) = self.tx.send(()) {
-            eprintln!("Error sending quit signal to UCI thread: {:?}", e);
+        if let Err(_) = self.tx.send(()) {
             return;
         }
         let _ = self.handle.join();
@@ -220,11 +219,14 @@ impl Uci {
         let (quit_tx, quit_rx) = unbounded::<()>();
         let mut quit = false;
         let handle = spawn(move || {
-            let mut stdin = BufReader::new(stdin());
+            let stdin = stdin();
             while !quit {
                 let mut line = String::new();
                 stdin.read_line(&mut line).unwrap();
                 if let Ok(command) = UciCommand::from_str(&line) {
+                    if command == UciCommand::Quit {
+                        quit = true;
+                    }
                     if let Err(e) = uci_tx.send(command) {
                         eprintln!("Error sending UCI command: {:?}", e);
                         break;
