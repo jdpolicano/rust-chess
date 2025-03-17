@@ -1,297 +1,244 @@
-use crate::engine::Engine;
-use crate::evaluation::NegaMaxOptions;
+// use crate::engine::Engine;
+use crate::engine::ThreadHandler;
 use crate::pgn::PgnEncoder;
-use chess::{Board, ChessMove, Game};
-use std::collections::HashMap;
+
+use chess::{ChessMove, Game};
+use crossbeam::channel::{unbounded, Receiver, Sender, TryRecvError};
 use std::fs::create_dir_all;
-use std::io::{stdin, stdout, BufRead, BufReader, Write};
+use std::io::{stdin, BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
-use std::thread::spawn;
+use std::thread::{spawn, JoinHandle};
 
-pub type UCIEngineOptions = HashMap<String, String>;
-
-pub struct UCIEngine<T: Engine + Send + 'static> {
-    stdin: BufReader<std::io::Stdin>,
-    stdout: std::io::Stdout,
-    engine: Option<T>,
-    initializer: fn(opts: UCIEngineOptions) -> T,
-    opts: UCIEngineOptions,
-    name: String,
-    author: String,
-    expect_ucinewgame: bool,
-    pub reg_later: bool,
-    pub debug: bool,
-    board: Board,
+pub enum UciParseError {
+    Unsupported,
+    MissingArgument,
+    InvalidUciMove,
 }
 
-impl<T: Engine + Send + 'static> UCIEngine<T> {
-    /// Create a new UCIEngine with an initializer function that builds an engine instance from a set of options.
-    pub fn new(initializer: fn(opts: UCIEngineOptions) -> T) -> Self {
-        Self {
-            stdin: BufReader::new(stdin()),
-            stdout: stdout(),
-            engine: None,
-            initializer,
-            opts: HashMap::new(),
-            name: "Rust Engine".to_string(),
-            author: "Jacob Policano".to_string(),
-            expect_ucinewgame: false,
-            reg_later: false,
-            debug: false,
-            board: Board::default(),
-        }
+#[derive(Debug, Clone)]
+pub enum UciCommand {
+    Uci,
+    IsReady,
+    SetOption {
+        name: String,
+        value: Option<String>,
+    },
+    Register {
+        name: Option<String>,
+        code: Option<String>,
+        later: bool,
+    },
+    UciNewGame,
+    Position {
+        fen: Option<String>,
+        moves: Vec<ChessMove>,
+    },
+    Go {
+        depth: Option<u8>,
+        movetime: Option<u64>,
+        infinite: bool,
+    },
+    Stop,
+    Debug(bool),
+    Quit,
+}
+
+impl UciCommand {
+    fn uci() -> Self {
+        UciCommand::Uci
     }
 
-    /// Main loop: read lines from stdin and dispatch UCI commands.
-    pub fn run(&mut self) -> Result<(), std::io::Error> {
-        loop {
-            let mut line = String::new();
+    fn is_ready() -> Self {
+        UciCommand::IsReady
+    }
 
-            if self.stdin.read_line(&mut line)? == 0 {
-                break; // EOF reached
+    fn set_option(parts: &[&str]) -> Result<Self, UciParseError> {
+        let mut iter = parts.iter();
+        let name = iter.next().map(|s| s.to_string());
+        if name.is_none() {
+            return Err(UciParseError::MissingArgument);
+        }
+        let value = iter.next().map(|s| s.to_string());
+        Ok(UciCommand::SetOption {
+            name: name.unwrap(),
+            value,
+        })
+    }
+
+    fn register(parts: &[&str]) -> Self {
+        let mut name = None;
+        let mut code = None;
+        let mut later = false;
+        let mut iter = parts.iter();
+        while let Some(toke) = iter.next() {
+            if *toke == "later" {
+                later = true;
+            } else if *toke == "name" {
+                name = iter.next().map(|s| s.to_string());
+            } else if *toke == "code" {
+                code = iter.next().map(|s| s.to_string());
             }
+        }
+        UciCommand::Register { name, code, later }
+    }
 
-            if line.is_empty() {
-                continue;
+    fn uci_new_game() -> Self {
+        UciCommand::UciNewGame
+    }
+
+    fn position(parts: &[&str]) -> Result<Self, UciParseError> {
+        let mut fen = None;
+        let mut moves = Vec::new();
+        let mut iter = parts.iter();
+        while let Some(toke) = iter.next() {
+            if *toke == "fen" {
+                fen = iter.next().map(|s| s.to_string());
+            } else if *toke == "moves" {
+                while let Some(mv) = iter.next() {
+                    if let Ok(m) = ChessMove::from_str(mv) {
+                        moves.push(m);
+                    } else {
+                        return Err(UciParseError::InvalidUciMove);
+                    }
+                }
             }
+        }
+        Ok(UciCommand::Position { fen, moves })
+    }
 
-            let parts: Vec<&str> = line.trim().split_whitespace().collect();
-            match parts[0] {
-                "uci" => self.handle_uci()?,
-                "isready" => self.handle_isready()?,
-                "setoption" => self.handle_setoption(&parts[1..])?,
-                "register" => self.handle_register(&parts[1..])?,
-                "ucinewgame" => self.handle_ucinewgame()?,
-                "position" => self.handle_position(&parts[1..])?,
-                "go" => self.handle_go(&parts[1..])?,
-                "stop" => self.handle_stop()?,
-                "ponderhit" => self.handle_ponderhit()?,
-                "debug" => self.handle_debug(&parts[1..])?,
-                "quit" => break,
+    fn go(parts: &[&str]) -> Self {
+        let mut depth = None;
+        let mut movetime = None;
+        let mut infinite = false;
+        let mut iter = parts.iter();
+        while let Some(toke) = iter.next() {
+            match *toke {
+                "depth" => {
+                    depth = iter.next().and_then(|s| s.parse().ok());
+                }
+                "movetime" => {
+                    movetime = iter.next().and_then(|s| s.parse().ok());
+                }
+                "infinite" => {
+                    infinite = true;
+                }
                 _ => (),
             }
         }
-        Ok(())
+        UciCommand::Go {
+            depth,
+            movetime,
+            infinite,
+        }
     }
 
-    /// Handles the "uci" command by sending the id, available options, and finally "uciok".
-    fn handle_uci(&mut self) -> Result<(), std::io::Error> {
-        writeln!(self.stdout, "id name {}", self.name)?;
-        writeln!(self.stdout, "id author {}", self.author)?;
-        // Here you can output any engine options you support.
-        writeln!(self.stdout, "option name Debug type check default false")?;
-        writeln!(
-            self.stdout,
-            "option name Hash type spin default 16 min 1 max 128"
-        )?;
-        // (Add additional options here as desired.)
-        writeln!(self.stdout, "uciok")?;
-        self.stdout.flush()?;
-        Ok(())
+    fn stop() -> Self {
+        UciCommand::Stop
     }
 
-    /// Responds to "isready" by immediately sending "readyok".
-    fn handle_isready(&mut self) -> Result<(), std::io::Error> {
-        writeln!(self.stdout, "readyok")?;
-        self.stdout.flush()?;
-        Ok(())
+    fn debug(parts: &[&str]) -> Self {
+        let mut debug = false;
+        if let Some(toke) = parts.get(0) {
+            debug = *toke == "on";
+        }
+        UciCommand::Debug(debug)
     }
 
-    /// Parses the "setoption" command of the form:
-    ///     setoption name <id> [value <x>]
-    /// and stores the option in the opts map.
-    fn handle_setoption(&mut self, line: &[&str]) -> Result<(), std::io::Error> {
-        let mut toke_iter = line.iter();
-        let mut name_pieces = Vec::new();
-        let mut value_pieces = Vec::new();
-        while let Some(toke) = toke_iter.next() {
-            if *toke == "name" {
-                while let Some(toke) = toke_iter.next() {
-                    if *toke == "value" {
+    fn quit() -> Self {
+        UciCommand::Quit
+    }
+}
+
+impl FromStr for UciCommand {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        if parts.is_empty() {
+            return Err(());
+        }
+        match parts[0] {
+            "uci" => Ok(UciCommand::uci()),
+            "isready" => Ok(UciCommand::is_ready()),
+            "setoption" => UciCommand::set_option(&parts[1..]).map_err(|_| ()),
+            "register" => Ok(UciCommand::register(&parts[1..])),
+            "ucinewgame" => Ok(UciCommand::uci_new_game()),
+            "position" => UciCommand::position(&parts[1..]).map_err(|_| ()),
+            "go" => Ok(UciCommand::go(&parts[1..])),
+            "stop" => Ok(UciCommand::stop()),
+            "debug" => Ok(UciCommand::debug(&parts[1..])),
+            "quit" => Ok(UciCommand::quit()),
+            _ => Err(()),
+        }
+    }
+}
+
+pub struct UciHandler {
+    rx: Receiver<UciCommand>,
+    tx: Sender<()>, // this is to send a quit signal to the uci thread.
+    handle: JoinHandle<()>,
+}
+
+impl ThreadHandler<(), UciCommand> for UciHandler {
+    fn receiver(&self) -> Receiver<UciCommand> {
+        self.rx.clone()
+    }
+
+    fn sender(&self) -> Sender<()> {
+        self.tx.clone()
+    }
+
+    fn quit(self) {
+        if let Err(e) = self.tx.send(()) {
+            eprintln!("Error sending quit signal to UCI thread: {:?}", e);
+            return;
+        }
+        let _ = self.handle.join();
+    }
+}
+
+pub struct Uci;
+
+impl Uci {
+    fn update_quit_signal(rx: Receiver<()>, quit: &mut bool) {
+        match rx.try_recv() {
+            Ok(_) => {
+                println!("uci interface detected quit signal");
+                *quit = true
+            }
+            Err(e) if e == TryRecvError::Empty => (),
+            Err(e) => {
+                eprintln!("Error receiving quit signal: {:?}", e);
+                *quit = true;
+            }
+        }
+    }
+
+    pub fn init() -> UciHandler {
+        let (uci_tx, uci_rx) = unbounded::<UciCommand>();
+        let (quit_tx, quit_rx) = unbounded::<()>();
+        let mut quit = false;
+        let handle = spawn(move || {
+            let mut stdin = BufReader::new(stdin());
+            while !quit {
+                let mut line = String::new();
+                stdin.read_line(&mut line).unwrap();
+                if let Ok(command) = UciCommand::from_str(&line) {
+                    if let Err(e) = uci_tx.send(command) {
+                        eprintln!("Error sending UCI command: {:?}", e);
                         break;
                     }
-                    name_pieces.push(*toke);
                 }
-            } else if *toke == "value" {
-                while let Some(toke) = toke_iter.next() {
-                    value_pieces.push(*toke);
-                }
-            }
-        }
-        let name = name_pieces.join(" ");
-        let value = value_pieces.join(" ");
-        if name.is_empty() || value.is_empty() {
-            return Ok(());
-        }
-        self.opts.insert(name, value);
-        Ok(())
-    }
-
-    /// Handles the "register" command (here simply a no-op).
-    fn handle_register(&mut self, _line: &[&str]) -> Result<(), std::io::Error> {
-        // Registration logic could be added here if needed.
-        Ok(())
-    }
-
-    /// Handles the "ucinewgame" command by reinitializing the engine.
-    fn handle_ucinewgame(&mut self) -> Result<(), std::io::Error> {
-        self.expect_ucinewgame = true;
-        Ok(())
-    }
-
-    /// Parses the "position" command, supporting both "startpos" and "fen" specifications,
-    /// and then applies any moves provided.
-    fn handle_position(&mut self, mut tokens: &[&str]) -> Result<(), std::io::Error> {
-        // "position [fen <fenstring> | startpos] [moves <move1> ... <movei>]
-        if tokens.len() == 0 {
-            return Ok(());
-        }
-        // Initialize engine if not already done.
-        if self.engine.is_none() {
-            self.engine = Some((self.initializer)(self.opts.clone()));
-        }
-        if tokens[0] == "startpos" {
-            // Start from the default starting position.
-            if tokens.len() > 1 && tokens[1] == "moves" {
-                self.apply_moves(&tokens[2..]);
-            }
-        } else if tokens[0] == "fen" {
-            // The FEN string may contain spaces – it is taken until the optional "moves" token.
-            let mut fen_parts = Vec::new();
-            tokens = &tokens[1..];
-            while tokens.len() != 0 && tokens[0] != "moves" {
-                fen_parts.push(tokens[0]);
-                tokens = &tokens[1..];
-            }
-            let fen = fen_parts.join(" ");
-            self.board = Board::from_str(&fen).unwrap();
-            if tokens.len() != 0 && tokens[0] == "moves" {
-                self.apply_moves(&tokens[1..]);
-            }
-        }
-        Ok(())
-    }
-
-    /// Applies a list of move strings to the engine by parsing them into ChessMove objects.
-    fn apply_moves(&mut self, moves: &[&str]) {
-        for mv in moves {
-            match ChessMove::from_str(mv) {
-                Ok(m) => self.board = self.board.make_move_new(m),
-                Err(e) => {
-                    let _ = write!(self.stdout, "Err({e}) invalid uci move {mv}");
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Handles the "go" command. This implementation ignores extra parameters (e.g. time, depth)
-    /// and simply queries the engine for its next move.
-    fn handle_go(&mut self, tokens: &[&str]) -> Result<(), std::io::Error> {
-        let mut time: Option<u64> = None;
-        let mut depth: Option<i8> = None;
-        let mut iter = tokens.iter();
-
-        while let Some(toke) = iter.next() {
-            match *toke {
-                "wtime" => {
-                    // white time remaining
-                    let _ = iter.next();
-                }
-                "btime" => {
-                    // black time remaining
-                    let _ = iter.next();
-                }
-                "winc" => {
-                    // white increment
-                    let _ = iter.next();
-                }
-                "binc" => {
-                    // black increment
-                    let _ = iter.next();
-                }
-                "movestogo" => {
-                    // moves to go
-                    let _ = iter.next();
-                }
-                "depth" => {
-                    // depth
-                    if let Some(d) = iter.next() {
-                        if let Ok(d) = d.parse::<i8>() {
-                            depth = Some(d);
-                        }
-                    }
-                }
-                "nodes" => {
-                    // nodes
-                    let _ = iter.next();
-                }
-                "mate" => {
-                    // mate in x
-                    let _ = iter.next();
-                }
-                "movetime" => {
-                    // move time
-                    if let Some(ms_str) = iter.next() {
-                        if let Ok(ms) = ms_str.parse::<u64>() {
-                            time = Some(ms);
-                        }
-                    };
-                }
-                "infinite" => {
-                    // infinite search
-                }
-                "ponder" => {
-                    // ponder
-                }
-                _ => {
-                    // unknown
-                }
-            }
-        }
-
-        if let Some(engine) = self.engine.take() {
-            let mut opts = NegaMaxOptions::new();
-            if let Some(t) = time {
-                opts = opts.mtime(t);
-            }
-            if let Some(d) = depth {
-                opts = opts.depth(d);
-            }
-            self.spawn_engine_thread(engine, self.board, opts);
-        } else {
-            writeln!(self.stdout, "bestmove 0000")?;
-        }
-        self.stdout.flush()?;
-        Ok(())
-    }
-
-    fn spawn_engine_thread(&mut self, engine: T, board: Board, opts: NegaMaxOptions) {
-        spawn(move || {
-            if let Some(mv) = engine.next_move(&board, opts) {
-                println!("bestmove {}", mv);
-            } else {
-                println!("bestmove 0000");
+                Self::update_quit_signal(quit_rx.clone(), &mut quit);
             }
         });
-    }
 
-    /// Handles the "stop" command.
-    /// In this synchronous implementation (where the search is blocking), this is a no-op.
-    fn handle_stop(&mut self) -> Result<(), std::io::Error> {
-        Ok(())
-    }
-
-    /// Handles the "ponderhit" command.
-    /// For this simple example, pondering is not supported.
-    fn handle_ponderhit(&mut self) -> Result<(), std::io::Error> {
-        Ok(())
-    }
-
-    /// Handles the "debug" command (e.g. "debug on" or "debug off") and updates the internal flag.
-    fn handle_debug(&mut self, _tokens: &[&str]) -> Result<(), std::io::Error> {
-        Ok(())
+        return UciHandler {
+            rx: uci_rx,
+            tx: quit_tx,
+            handle,
+        };
     }
 }
 

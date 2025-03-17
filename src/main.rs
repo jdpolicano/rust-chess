@@ -1,25 +1,10 @@
-use rust_engine::engine::get_engine;
-use rust_engine::uci::{UCIEngine, UCITestEngine};
+use rust_engine::engine::Engine;
+//use rust_engine::uci::{UCIEngine, UCITestEngine};
 
 fn main() {
-    let is_test_engine = "RUST_CHESS_TEST_MODE";
-    let env = std::env::var(is_test_engine);
-    if env.is_ok() {
-        println!("running in chess engine mode...");
-        let options = CommandLineOptions::new();
-        let test_engine = UCITestEngine::default();
-        println!("running eng1 as {}", options.eng1);
-        println!("running eng2 as {}", options.eng2);
-        if let Err(e) = test_engine.run(options.eng1, options.eng2) {
-            eprintln!("Error: {}", e);
-        }
-        return;
-    }
-    let mut engine = UCIEngine::new(get_engine);
-
-    if let Err(e) = engine.run() {
-        eprintln!("Error: {}", e);
-    }
+    let options = CommandLineOptions::new();
+    let mut eng = Engine::new();
+    eng.run();
 }
 
 struct CommandLineOptions {

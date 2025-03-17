@@ -1,114 +1,182 @@
-use std::collections::HashMap;
-
 use crate::{
-    evaluation::{nega_max, task_must_stop, NegaMaxOptions, NegaMaxResult, SearchState, MIN_SCORE},
-    uci::UCIEngineOptions,
+    search::{Search, SearchCommand, SearchControl, SearchHandler, SearchRequest, SearchResult},
+    uci::{Uci, UciCommand, UciHandler},
 };
-use chess::{Board, ChessMove, MoveGen};
-use rayon::prelude::*;
+use chess::{Board, ChessMove};
+use crossbeam::channel::{select, Receiver, Sender};
+use std::collections::HashMap;
+use std::str::FromStr;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
-pub fn get_engine(_: UCIEngineOptions) -> ChessEngine {
-    return ChessEngine::new();
+pub trait ThreadHandler<S, R> {
+    fn receiver(&self) -> Receiver<R>;
+    // should be a thread handler
+    fn sender(&self) -> Sender<S>;
+    // should be a command to quit
+    fn quit(self);
 }
 
-pub trait Engine {
-    fn next_move(&self, board: &Board, opts: NegaMaxOptions) -> Option<ChessMove>;
+pub struct Engine {
+    eng_config: HashMap<String, String>,
+    search_handler: SearchHandler,
+    search_sig: Arc<AtomicBool>,
+    uci_handler: UciHandler,
+    board: Option<Board>,
+    moves: Vec<ChessMove>,
+    positions: Vec<u64>,
+    quit: bool,
 }
 
-pub struct ChessEngine {
-    debug: bool,
-}
-
-impl ChessEngine {
+impl Engine {
     pub fn new() -> Self {
-        //let pgn_encoder = PgnEncoder::new(game.current_position(), None);
-        let debug = false;
-        return Self { debug };
+        let eng_config = Engine::init_default_config();
+        let search_handler = Search::init();
+        let uci_handler = Uci::init();
+        let board = None;
+        let moves = Vec::new();
+        let positions = Vec::new();
+        let search_sig = Arc::new(AtomicBool::new(false));
+        Engine {
+            eng_config,
+            search_handler,
+            search_sig,
+            uci_handler,
+            board,
+            moves,
+            positions,
+            quit: false,
+        }
     }
 
-    fn get_state(board: &Board) -> SearchState {
-        return SearchState::from_board(*board);
-    }
-
-    pub fn set_debug(&mut self, b: bool) {
-        self.debug = b;
-    }
-}
-
-// impl Engine for ChessEngine {
-//     fn next_move(&self, board: &Board, opts: NegaMaxOptions) -> Option<ChessMove> {
-//         let ideal_moves = MoveGen::new_legal(&board)
-//             .par_bridge()
-//             .map(|m| {
-//                 let mut state = self.get_curr_state(&board);
-//                 state.apply_move(m);
-//                 let score = -nega_max(state, opts.clone());
-//                 return (score, m);
-//             })
-//             .collect();
-//         return self.aggregate_results(ideal_moves);
-//     }
-// }
-
-impl Engine for ChessEngine {
-    fn next_move(&self, board: &Board, opts: NegaMaxOptions) -> Option<ChessMove> {
-        // Collect legal moves once.
-        let legal_moves: Vec<ChessMove> = MoveGen::new_legal(board).collect();
-        let mut best_move = None;
-        // Determine maximum depth from the options.
-        let max_depth = opts.get_depth();
-        let global_time = opts.get_mtime();
-        let signal = opts.get_signal();
-        // Iterative deepening loop in the main thread:
-        let state = Self::get_state(board);
-        for current_depth in 1..=max_depth {
-            // Dispatch parallel search for each legal move:
-            let results: Vec<(NegaMaxResult, ChessMove)> = legal_moves
-                .par_iter()
-                .map(|m| search_move(&state, opts.depth(current_depth), m))
-                .collect();
-
-            aggregate_results(results).map(|m| {
-                println!("info depth {}", current_depth);
-                best_move = Some(m);
-            });
-            // Check overall time and break if reached.
-            if task_must_stop(&global_time, &signal) {
-                break;
+    pub fn run(mut self) {
+        while !self.quit {
+            select! {
+                recv(self.search_handler.receiver()) -> msg => {
+                    if let Err(e) = msg {
+                        eprintln!("Error: {:?}", e);
+                        break;
+                    }
+                    self.print_search_response(msg.unwrap());
+                }
+                recv(self.uci_handler.receiver()) -> msg => {
+                    if let Err(e) = msg {
+                        eprintln!("Error: {:?}", e);
+                        break;
+                    }
+                    self.handle_uci_command(msg.unwrap());
+                }
             }
         }
-
-        best_move
+        self.quit();
     }
-}
 
-fn search_move(
-    state: &SearchState,
-    opts: NegaMaxOptions,
-    m: &ChessMove,
-) -> (NegaMaxResult, ChessMove) {
-    let score = -nega_max(state.apply_move(m), opts);
-    (score, *m)
-}
-
-fn aggregate_results(results: Vec<(NegaMaxResult, ChessMove)>) -> Option<ChessMove> {
-    if results.len() < 1 {
-        return None;
-    }
-    let mut max_score = MIN_SCORE;
-    let mut total_nodes = 0;
-    let mut best_move = None;
-    let mut is_incomplete = false;
-    for (result, m) in results {
-        if !result.is_complete {
-            is_incomplete = true;
-        }
-        total_nodes += result.nodes;
-        if result.score > max_score {
-            max_score = result.score;
-            best_move = Some(m);
+    fn print_search_response(&self, msg: SearchResult) {
+        if let Ok(response) = msg {
+            if let Some(bm) = response.best_move {
+                println!("bestmove {}", bm);
+            }
+        } else {
+            eprintln!("Error: {:?}", msg);
         }
     }
-    println!("info nodes {}", total_nodes);
-    return if is_incomplete { None } else { best_move };
+
+    fn handle_uci_command(&mut self, cmd: UciCommand) {
+        match cmd {
+            UciCommand::Quit => self.quit = true,
+            UciCommand::IsReady => self.handle_isready(),
+            UciCommand::Uci => self.handle_uci(),
+            UciCommand::Position { fen, moves } => self.handle_position(fen, moves),
+            UciCommand::Go { .. } => self.handle_go(cmd),
+            UciCommand::Stop => self.handle_stop(),
+            _ => {}
+        }
+    }
+
+    fn handle_isready(&self) {
+        println!("readyok");
+    }
+
+    fn handle_uci(&self) {
+        println!("id name {}", self.eng_config.get("name").unwrap());
+        println!("id author {}", self.eng_config.get("author").unwrap());
+        println!("uciok");
+    }
+
+    fn handle_position(&mut self, fen: Option<String>, moves: Vec<ChessMove>) {
+        let mut board = Board::default();
+        if let Some(fen) = fen {
+            let b = Board::from_str(&fen);
+            if b.is_err() {
+                eprintln!("Error: {:?}", b.err().unwrap());
+                return;
+            }
+            board = b.unwrap();
+        }
+        self.moves = moves;
+        self.positions = vec![board.get_hash()];
+        for m in &self.moves {
+            board = board.make_move_new(*m);
+            self.positions.push(board.get_hash());
+        }
+        self.board = Some(board);
+    }
+
+    fn handle_go(&mut self, cmd: UciCommand) {
+        if self.board.is_none() {
+            eprintln!("Error: No board position set.");
+            return;
+        }
+        let ctrl: Result<SearchControl, ()> = cmd.try_into();
+        if ctrl.is_err() {
+            eprintln!("Error: {:?}", ctrl.err().unwrap());
+            return;
+        }
+        let cmd = self.build_search_cmd(ctrl.unwrap());
+        if let Err(e) = self.search_handler.sender().send(cmd) {
+            eprintln!("Error: {:?}", e);
+            self.quit = true;
+        }
+        self.board = None;
+        self.moves.clear();
+        self.positions.clear();
+    }
+
+    fn handle_stop(&mut self) {
+        println!("lets try to stop...");
+        self.search_sig.store(true, Ordering::Relaxed);
+        // wait for the message back before continuing
+        let msg = self.search_handler.receiver().recv();
+        if let Err(e) = msg {
+            eprintln!("Error: {:?}", e);
+            self.quit = true;
+            return;
+        }
+        self.print_search_response(msg.unwrap());
+        self.search_sig.store(false, Ordering::Relaxed);
+    }
+
+    fn build_search_cmd(&self, ctrl: SearchControl) -> SearchCommand {
+        let req = SearchRequest::new(
+            ctrl,
+            self.board.unwrap().clone(),
+            self.positions.clone(),
+            self.search_sig.clone(),
+        );
+        SearchCommand::Search(req)
+    }
+
+    fn quit(self) {
+        self.search_handler.quit();
+        self.uci_handler.quit();
+    }
+
+    fn init_default_config() -> HashMap<String, String> {
+        let mut eng_config = HashMap::new();
+        eng_config.insert("name".to_string(), "RustChess".to_string());
+        eng_config.insert("author".to_string(), "Jacob Policano".to_string());
+        eng_config
+    }
 }

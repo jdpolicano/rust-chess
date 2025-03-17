@@ -1,9 +1,11 @@
 use crate::piece_table::{piece_value, score_piece_position};
 use chess::{Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square, EMPTY};
+use std::cell::RefCell;
 use std::ops::Neg;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub const MIN_SCORE: i32 = (i16::MIN) as i32;
 pub const CHECKMATE_SCORE: i32 = MIN_SCORE + 128;
@@ -49,7 +51,6 @@ impl MoveEvents {
 
 pub struct MoveInfo {
     pub color_to_move: Color,
-    pub color_of_opponent: Color,
     pub move_events: MoveEvents,
     pub from: Square,
     pub to: Square,
@@ -66,7 +67,6 @@ impl MoveInfo {
     ) -> Self {
         return Self {
             color_to_move,
-            color_of_opponent: !color_to_move,
             move_events,
             from,
             to,
@@ -87,228 +87,171 @@ impl MoveInfo {
 }
 
 #[derive(Clone, Debug)]
-pub struct SearchState {
+pub struct SearchContext {
     pub board: Board,
+    pub hash: u64,
+    history_stack: Rc<RefCell<Vec<u64>>>,
+    pub seen_times: u8,
     pub white_position: i32,
     pub black_position: i32,
+    pub time: Option<Instant>,
+    pub signal: Arc<AtomicBool>,
 }
 
-impl SearchState {
-    pub fn new(board: Board, white_position: i32, black_position: i32) -> Self {
+impl SearchContext {
+    pub fn new(
+        board: Board,
+        history_stack: Rc<RefCell<Vec<u64>>>,
+        white_position: i32,
+        black_position: i32,
+        time: Option<Instant>,
+        signal: Arc<AtomicBool>,
+    ) -> Self {
+        let hash = board.get_hash();
+        history_stack.borrow_mut().push(hash);
+        let seen_times = history_stack
+            .borrow()
+            .iter()
+            .filter(|h| **h == hash)
+            .count() as u8;
         return Self {
             board,
+            hash,
+            seen_times,
+            history_stack,
             white_position,
             black_position,
+            time,
+            signal,
         };
     }
 
-    pub fn from_board(board: Board) -> Self {
+    pub fn from_board(
+        board: Board,
+        history: Rc<RefCell<Vec<u64>>>,
+        time: Option<Instant>,
+        signal: Arc<AtomicBool>,
+    ) -> Self {
         let (white_position, black_position) = score_board_position(&board);
-        return Self::new(board, white_position, black_position);
+        return Self::new(board, history, white_position, black_position, time, signal);
     }
 
-    pub fn board_score(&self) -> i32 {
-        if self.board.side_to_move() == Color::White {
-            return self.white_position - self.black_position;
-        }
-        return self.black_position - self.white_position;
-    }
-
-    // convert a checkmate (no move min) to a score for the side to move
-    pub fn terminal(&self, status: BoardStatus) -> i32 {
-        match status {
-            BoardStatus::Checkmate => MIN_SCORE,
-            _ => 0,
-        }
-    }
-
-    pub fn apply_move(&self, m: &ChessMove) -> Self {
-        let mut next = self.clone();
-        next.score_position_change(&MoveInfo::from_move(m, &next.board));
-        next.board = next.board.make_move_new(*m);
-        return next;
-    }
-
-    pub fn score_position_change(&mut self, info: &MoveInfo) {
-        let position_diff = score_position_diff(info);
-        let capture_diff = score_capture_diff(info);
-        if info.color_to_move == Color::White {
-            self.white_position += position_diff;
-            self.black_position += capture_diff;
+    fn board_score(&self) -> i32 {
+        return if self.board.side_to_move() == Color::White {
+            self.white_position - self.black_position
         } else {
-            self.black_position += position_diff;
-            self.white_position += capture_diff;
-        }
+            self.black_position - self.white_position
+        };
     }
 
-    pub fn status(&self) -> BoardStatus {
-        return self.board.status();
+    pub fn apply_move_new(&self, m: &ChessMove) -> Self {
+        let info = MoveInfo::from_move(m, &self.board);
+        let position_diff = score_position_diff(&info);
+        let capture_diff = score_capture_diff(&info);
+        let mut white_position = self.white_position;
+        let mut black_position = self.black_position;
+        if info.color_to_move == Color::White {
+            white_position += position_diff;
+            black_position += capture_diff;
+        } else {
+            black_position += position_diff;
+            white_position += capture_diff;
+        }
+        return Self::new(
+            self.board.make_move_new(*m),
+            self.history_stack.clone(),
+            white_position,
+            black_position,
+            self.time,
+            self.signal.clone(),
+        );
+    }
+
+    pub fn should_terminate(&self) -> bool {
+        return task_must_stop(&self.time, &self.signal);
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct NegaMaxResult {
     pub nodes: u64,
     pub score: i32,
-    pub is_complete: bool,
 }
 
 impl NegaMaxResult {
-    pub fn new(score: i32) -> Self {
-        return Self {
-            nodes: 1,
-            score,
-            is_complete: false,
-        };
+    pub fn new(score: i32, nodes: u64) -> Self {
+        return Self { nodes, score };
     }
 
-    pub fn max_join(mut self, other: Self) -> Self {
-        self.nodes += other.nodes;
-        self.score = self.score.max(other.score);
-        return self;
+    pub fn new_checkmate(depth_offset: u8) -> Self {
+        return Self::new(CHECKMATE_SCORE - depth_offset as i32, 0);
     }
 
-    pub fn complete(self) -> Self {
-        return Self {
-            nodes: self.nodes,
-            score: self.score,
-            is_complete: true,
-        };
+    pub fn new_draw() -> Self {
+        return Self::new(0, 0);
     }
 
-    pub fn nodes(mut self, n: u64) -> Self {
-        self.nodes = n;
-        return self;
+    pub fn min() -> Self {
+        return Self::new(MIN_SCORE, 0);
+    }
+
+    pub fn max_join(&self, other: &Self) -> Self {
+        let score = self.score.max(other.score);
+        let nodes = self.nodes + other.nodes;
+        return Self::new(score, nodes);
     }
 }
 
 impl Neg for NegaMaxResult {
-    type Output = NegaMaxResult;
+    type Output = Self;
+
     fn neg(self) -> Self::Output {
-        return NegaMaxResult {
-            nodes: self.nodes,
-            score: -self.score,
-            is_complete: self.is_complete,
-        };
+        return Self::new(-self.score, self.nodes);
     }
 }
 
-#[derive(Clone)]
-pub enum NegaMaxDepth {
-    Infinite,
-    Finite(i8),
-}
+pub fn nega_max(ctx: SearchContext, depth: u8, mut alpha: i32, beta: i32) -> NegaMaxResult {
+    let mg = MoveGen::new_legal(&ctx.board);
 
-#[derive(Clone)]
-pub struct NegaMaxOptions {
-    depth: NegaMaxDepth,
-    mtime: Option<Instant>,
-    signal: Option<Arc<AtomicBool>>,
-}
-
-impl NegaMaxOptions {
-    pub fn new() -> Self {
-        Self {
-            depth: NegaMaxDepth::Infinite,
-            mtime: None,
-            signal: None,
-        }
-    }
-
-    pub fn depth(&self, depth: i8) -> Self {
-        return Self {
-            depth: NegaMaxDepth::Finite(depth),
-            mtime: self.mtime,
-            signal: self.signal.clone(),
-        };
-    }
-
-    pub fn mtime(&self, limit: u64) -> Self {
-        // self.mtime = Some(Instant::now() + Duration::from_millis(limit));
-        return Self {
-            depth: self.depth.clone(),
-            mtime: Some(Instant::now() + Duration::from_millis(limit)),
-            signal: self.signal.clone(),
-        };
-    }
-
-    pub fn signal(&self, signal: Arc<AtomicBool>) -> Self {
-        // self.signal = Some(signal);
-        return Self {
-            depth: self.depth.clone(),
-            mtime: self.mtime,
-            signal: Some(signal),
-        };
-    }
-
-    pub fn get_depth(&self) -> i8 {
-        match self.depth {
-            // this might as well be infinite.
-            NegaMaxDepth::Infinite => i8::MAX,
-            NegaMaxDepth::Finite(d) => d,
-        }
-    }
-
-    pub fn get_mtime(&self) -> Option<Instant> {
-        return self.mtime;
-    }
-
-    pub fn get_signal(&self) -> Option<Arc<AtomicBool>> {
-        return self.signal.clone();
-    }
-}
-
-/// The default negamax with rely on iterative deepening in order to support time limits.
-/// If you need to just search an exact depth it might be more efficent to call nega_max_with_depth instead.
-pub fn nega_max(state: SearchState, opts: NegaMaxOptions) -> NegaMaxResult {
-    let depth = opts.get_depth();
-    let time = opts.get_mtime();
-    let signal = opts.get_signal();
-    return nega_max_proper(state, depth, MIN_SCORE, -MIN_SCORE, &time, &signal);
-}
-
-fn nega_max_proper(
-    state: SearchState,
-    depth: i8,
-    mut alpha: i32,
-    beta: i32,
-    time: &Option<Instant>,
-    signal: &Option<Arc<AtomicBool>>,
-) -> NegaMaxResult {
-    let base_score = NegaMaxResult::new(state.board_score());
-    // if we can't go further, return the score of the board as is.
-    if depth == 0 {
-        if state.board.status() == BoardStatus::Checkmate {
-            return NegaMaxResult::new(CHECKMATE_SCORE).complete();
-        }
-        return base_score.complete();
-    }
-
-    let mut max = NegaMaxResult::new(MIN_SCORE);
-
-    for m in MoveGen::new_legal(&state.board) {
-        let local = -nega_max_proper(state.apply_move(&m), depth - 1, -beta, -alpha, time, signal);
-        max.nodes += local.nodes;
-        max.score = max.score.max(local.score);
-        alpha = alpha.max(max.score);
-        if alpha >= beta {
-            return max.complete();
-        }
-        if task_must_stop(time, signal) {
-            return base_score.max_join(max);
-        }
-    }
-
-    // handle the case where the board was in checkmate or stalemate (i.e., had no moves)
-    if max.nodes == 1 {
-        if *state.board.checkers() == EMPTY {
-            return NegaMaxResult::new(0).complete();
+    // check for checkmate or draw
+    if mg.len() == 0 {
+        if *ctx.board.checkers() != EMPTY {
+            return NegaMaxResult::new_checkmate(depth);
         } else {
-            return NegaMaxResult::new(CHECKMATE_SCORE - depth as i32).complete();
+            return NegaMaxResult::new_draw();
         }
     }
 
-    return max.complete(); //
+    // check for repetition
+    if ctx.seen_times >= 3 {
+        return NegaMaxResult::new_draw();
+    }
+
+    // check for depth cutoff
+    if depth == 0 {
+        return NegaMaxResult::new(ctx.board_score(), 0);
+    }
+
+    let mut max_score = MIN_SCORE;
+    let mut nodes = 0;
+    let history = ctx.history_stack.clone();
+    for m in mg {
+        // create a new context with the move applied
+        let next_ctx = ctx.apply_move_new(&m);
+        // perform the nega_max search on the new context
+        let child = -nega_max(next_ctx, depth - 1, -beta, -alpha);
+        // remove the hash from the history stack (added when applying the move)
+        history.borrow_mut().pop();
+        // update the max score and alpha
+        nodes += child.nodes + 1;
+        max_score = max_score.max(child.score);
+        alpha = alpha.max(max_score);
+        // if we have a cutoff, return the result
+        if alpha >= beta || ctx.should_terminate() {
+            return NegaMaxResult::new(max_score, nodes);
+        }
+    }
+    NegaMaxResult::new(max_score, nodes)
 }
 
 /// returns the change in positional score after a capture relative to the opponent
@@ -316,7 +259,7 @@ pub fn score_capture_diff(info: &MoveInfo) -> i32 {
     let capture_score = info.move_events.capture.as_ref().map(|c| {
         score_piece_position(
             c.piece,
-            info.color_of_opponent,
+            !info.color_to_move,
             c.sq.get_rank(),
             c.sq.get_file(),
         )
@@ -402,15 +345,12 @@ pub fn score_board_material(board: &Board) -> (i32, i32) {
     return (white, black);
 }
 
-pub fn task_must_stop(time: &Option<Instant>, signal: &Option<Arc<AtomicBool>>) -> bool {
+pub fn task_must_stop(time: &Option<Instant>, signal: &Arc<AtomicBool>) -> bool {
     return signal_must_stop(signal) || time_must_stop(time);
 }
 
-fn signal_must_stop(signal: &Option<Arc<AtomicBool>>) -> bool {
-    if let Some(ref s) = signal {
-        return s.load(Ordering::Relaxed);
-    }
-    return false;
+fn signal_must_stop(signal: &Arc<AtomicBool>) -> bool {
+    return signal.load(Ordering::Relaxed);
 }
 
 fn time_must_stop(time: &Option<Instant>) -> bool {
@@ -430,24 +370,15 @@ mod test {
     #[test]
     fn negamax_result() {
         // test join
-        let a = NegaMaxResult::new(10);
-        let b = NegaMaxResult::new(20);
-        let c = a.max_join(b);
+        let a = NegaMaxResult::new(10, 1);
+        let b = NegaMaxResult::new(20, 1);
+        let c = a.max_join(&b);
         assert_eq!(c.score, 20);
         assert_eq!(c.nodes, 2);
 
         // test neg
         let d = -c;
         assert_eq!(d.score, -20);
-
-        // test complete
-        let e = NegaMaxResult::new(30);
-        let f = e.complete();
-        assert_eq!(f.is_complete, true);
-
-        // test nodes
-        let g = NegaMaxResult::new(40).nodes(100);
-        assert_eq!(g.nodes, 100);
     }
 
     #[test]
@@ -493,20 +424,22 @@ mod test {
     #[test]
     fn mate_in_one() {
         let board = Board::from_str("5k2/QR6/8/8/6K1/8/8/8 w - - 0 1").unwrap();
-        let state = SearchState::from_board(board);
+        let history = Rc::new(RefCell::new(Vec::new()));
+        let ctx = SearchContext::from_board(board, history, None, Arc::new(AtomicBool::new(false)));
         let d = 1;
-        let result = nega_max(state, NegaMaxOptions::new().depth(d));
+        let result = nega_max(ctx, d, MIN_SCORE, -MIN_SCORE);
         assert_eq!(result.score, -CHECKMATE_SCORE);
     }
 
     #[test]
     fn mate_in_two() {
         let board = Board::from_str("r6k/4Rppp/8/8/8/8/8/4R2K w - - 0 1").unwrap();
-        let state = SearchState::from_board(board);
+        let history = Rc::new(RefCell::new(Vec::new()));
+        let ctx = SearchContext::from_board(board, history, None, Arc::new(AtomicBool::new(false)));
         let d1 = 1;
         let d2 = 4;
-        let result1 = nega_max(state.clone(), NegaMaxOptions::new().depth(d1));
-        let result2 = nega_max(state.clone(), NegaMaxOptions::new().depth(d2));
+        let result1 = nega_max(ctx.clone(), d1, MIN_SCORE, -MIN_SCORE);
+        let result2 = nega_max(ctx.clone(), d2, MIN_SCORE, -MIN_SCORE);
         assert!(result1.score < result2.score);
         assert_eq!(result2.score, -CHECKMATE_SCORE + 1); // mate in 2 should be slightly better than other mates
     }
@@ -514,9 +447,10 @@ mod test {
     #[test]
     fn mate_in_two_v_mate_in_one() {
         let board = Board::from_str("r6k/4Rppp/8/8/8/8/7Q/1B2R2K w - - 0 1").unwrap();
-        let state = SearchState::from_board(board);
+        let history = Rc::new(RefCell::new(Vec::new()));
+        let ctx = SearchContext::from_board(board, history, None, Arc::new(AtomicBool::new(false)));
         let d = 3;
-        let result = nega_max(state.clone(), NegaMaxOptions::new().depth(d));
+        let result = nega_max(ctx, d, MIN_SCORE, -MIN_SCORE);
         assert_eq!(result.score, -CHECKMATE_SCORE + 2); // mate in 1 should be slightly better than mate in two
     }
 
@@ -528,11 +462,43 @@ mod test {
         let same_board_for_black_but_reversed =
             Board::from_str("rnbqkbnr/ppp2ppp/4p3/3p4/8/2N2N2/PPPPPPPP/R1BQKB1R b KQkq - 0 1")
                 .unwrap();
-        let state_white = SearchState::from_board(board_for_white);
-        let state_black = SearchState::from_board(same_board_for_black_but_reversed);
+        let history = Rc::new(RefCell::new(Vec::new()));
+        let ctx_white = SearchContext::from_board(
+            board_for_white,
+            history.clone(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let ctx_black = SearchContext::from_board(
+            same_board_for_black_but_reversed,
+            history.clone(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
         let d = 3;
-        let result1 = nega_max(state_white, NegaMaxOptions::new().depth(d));
-        let result2 = nega_max(state_black, NegaMaxOptions::new().depth(d));
+        let result1 = nega_max(ctx_white, d, MIN_SCORE, -MIN_SCORE);
+        let result2 = nega_max(ctx_black, d, MIN_SCORE, -MIN_SCORE);
         assert!(result1.score == result2.score);
     }
+
+    // #[test]
+    // fn perft() {
+    //     // see https://en.wikipedia.org/wiki/Shannon_number
+    //     // Remove the code that handles the alpha beta pruning to run this test.
+    //     let board = Board::default();
+    //     let history = Rc::new(RefCell::new(Vec::new()));
+    //     let ctx = SearchContext::from_board(board, history);
+    //     let d = 1;
+    //     let d_expected = 20;
+    //     let result = nega_max(ctx.clone(), d, MIN_SCORE, -MIN_SCORE);
+    //     let d2 = 2;
+    //     let d2_expected = 400 + d_expected;
+    //     let result2 = nega_max(ctx.clone(), d2, MIN_SCORE, -MIN_SCORE);
+    //     let d3 = 3;
+    //     let d3_expected = 8902 + d2_expected;
+    //     let result3 = nega_max(ctx.clone(), d3, MIN_SCORE, -MIN_SCORE);
+    //     assert_eq!(result.nodes, d_expected);
+    //     assert_eq!(result2.nodes, d2_expected);
+    //     assert_eq!(result3.nodes, d3_expected);
+    // }
 }
