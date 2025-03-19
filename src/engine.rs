@@ -1,5 +1,7 @@
 use crate::{
-    search::{Search, SearchCommand, SearchControl, SearchHandler, SearchRequest, SearchResult},
+    search::handler::{
+        Search, SearchCommand, SearchControl, SearchHandler, SearchRequest, SearchResponse,
+    },
     uci::{Uci, UciCommand, UciHandler},
 };
 use chess::{Board, ChessMove};
@@ -73,13 +75,14 @@ impl Engine {
         self.quit();
     }
 
-    fn print_search_response(&self, msg: SearchResult) {
-        if let Ok(response) = msg {
-            if let Some(bm) = response.best_move {
-                println!("bestmove {}", bm);
-            }
-        } else {
-            eprintln!("Error: {:?}", msg);
+    fn print_search_response(&self, msg: SearchResponse) {
+        if let Some(bm) = msg.best_move {
+            let move_info = msg.all_moves.iter().find(|m| m.move_is(bm)).unwrap();
+            println!(
+                "info depth {} nodes {} score cp {}",
+                msg.depth, msg.nodes, move_info.info.score
+            );
+            println!("bestmove {}", bm);
         }
     }
 

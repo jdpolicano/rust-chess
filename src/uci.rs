@@ -11,7 +11,6 @@ use std::str::FromStr;
 use std::thread::{spawn, JoinHandle};
 
 pub enum UciParseError {
-    Unsupported,
     MissingArgument,
     InvalidUciMove,
 }
@@ -93,7 +92,22 @@ impl UciCommand {
         let mut iter = parts.iter();
         while let Some(toke) = iter.next() {
             if *toke == "fen" {
-                fen = iter.next().map(|s| s.to_string());
+                let mut fen_str = String::new();
+                while let Some(f) = iter.next() {
+                    if *f == "moves" {
+                        break;
+                    }
+                    fen_str.push_str(f);
+                    fen_str.push(' ');
+                }
+                fen = Some(fen_str.trim().to_string());
+                while let Some(mv) = iter.next() {
+                    if let Ok(m) = ChessMove::from_str(mv) {
+                        moves.push(m);
+                    } else {
+                        return Err(UciParseError::InvalidUciMove);
+                    }
+                }
             } else if *toke == "moves" {
                 while let Some(mv) = iter.next() {
                     if let Ok(m) = ChessMove::from_str(mv) {
@@ -261,15 +275,16 @@ impl UCITestEngine {
     }
 
     pub fn run(&self, eng1_path: String, eng2_path: String) -> Result<(), std::io::Error> {
+        println!("running eng1 {} and eng2 {}", eng1_path, eng2_path);
         let eng1 = std::process::Command::new(eng1_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .env_remove("RUST_CHESS_TEST_MODE")
+            .env_remove("RUST_ENG_TEST_MODE")
             .spawn()?;
         let eng2 = Command::new(eng2_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .env_remove("RUST_CHESS_TEST_MODE")
+            .env_remove("RUST_ENG_TEST_MODE")
             .spawn()?;
         return self.run_tests(eng1, eng2);
     }
@@ -280,7 +295,9 @@ impl UCITestEngine {
         let mut white = eng1;
         let mut black = eng2;
         self.setup_engine(&mut white)?;
+        println!("eng1 setup complete");
         self.setup_engine(&mut black)?;
+        println!("eng2 setup complete");
         let mut game = Game::new();
         let mut encoder = PgnEncoder::new(game.current_position().clone(), None);
         let mut eng1_wins = 0;
@@ -466,8 +483,8 @@ impl Default for UCITestEngine {
     fn default() -> Self {
         Self {
             outdir: "./tmp/games".to_string(),
-            iterations: 10,
-            mtime: 2500,
+            iterations: 1,
+            mtime: 10000,
         }
     }
 }
