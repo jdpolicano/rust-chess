@@ -41,7 +41,7 @@ impl Neg for NegaMaxResult {
 
 pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, mut beta: i16) -> NegaMaxResult {
     if let Some(te) = ctx.tt.get(ctx.hash) {
-        if te.depth >= depth {
+        if te.depth >= ctx.depth {
             match te.node_type {
                 NodeType::Exact => {
                     return NegaMaxResult::new(te.score, 0);
@@ -91,6 +91,7 @@ pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, mut beta: i16
 
     let mut max_score = MIN_SCORE;
     let mut nodes = 0;
+    let mut best_move = ChessMove::default();
     for m in mg {
         // create a new context with the move applied
         // perform the nega_max search on the new context
@@ -101,19 +102,16 @@ pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, mut beta: i16
         ctx.history.pop();
         // update the max score and alpha
         nodes += child.nodes + 1;
-        max_score = max_score.max(child.score);
-        alpha = alpha.max(max_score);
+        if child.score > max_score {
+            max_score = child.score;
+            best_move = m;
+        }
+        if child.score > alpha {
+            alpha = child.score;
+        }
         // if we have a cutoff, return the result
         if alpha >= beta {
-            ctx.tt.set(
-                ctx.hash,
-                ctx.depth,
-                max_score,
-                ChessMove::default(),
-                alpha,
-                beta,
-            );
-            return NegaMaxResult::new(max_score, nodes);
+            break;
         }
 
         if (CHECK_TERMINATION & nodes == 0) && task_must_stop(&ctx.time, &ctx.signal) {
@@ -121,18 +119,30 @@ pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, mut beta: i16
         }
     }
 
-    ctx.tt.set(
-        ctx.hash,
-        ctx.depth,
-        max_score,
-        ChessMove::default(),
-        alpha,
-        beta,
-    );
+    ctx.tt
+        .set(ctx.hash, ctx.depth, max_score, best_move, alpha, beta);
     NegaMaxResult::new(max_score, nodes)
 }
 
-pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, beta: i16) -> NegaMaxResult {
+pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, mut beta: i16) -> NegaMaxResult {
+    if let Some(te) = ctx.tt.get(ctx.hash) {
+        if te.depth >= ctx.depth {
+            match te.node_type {
+                NodeType::Exact => {
+                    return NegaMaxResult::new(te.score, 0);
+                }
+                NodeType::LowerBound => {
+                    alpha = alpha.max(te.score);
+                }
+                NodeType::UpperBound => {
+                    beta = beta.min(te.score);
+                }
+            }
+            if alpha >= beta {
+                return NegaMaxResult::new(te.score, 0);
+            }
+        }
+    }
     let stand_pat = ctx.board_score();
     let mut best_value = stand_pat;
 
@@ -150,6 +160,7 @@ pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, beta: i16) -> N
 
     let mg = get_sorted_moves(&ctx.board);
     let mut nodes = 0;
+    let mut best_move = ChessMove::default();
     for m in mg {
         if !is_capture(&m, &ctx.board) {
             continue;
@@ -161,16 +172,20 @@ pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, beta: i16) -> N
         ctx.history.pop();
 
         nodes += child.nodes + 1;
-        if child.score >= beta {
-            return NegaMaxResult::new(child.score, nodes);
-        }
         if child.score > best_value {
             best_value = child.score;
+            best_move = m;
         }
         if child.score > alpha {
             alpha = child.score;
         }
+        if alpha >= beta {
+            break;
+        }
     }
+
+    ctx.tt
+        .set(ctx.hash, ctx.depth, best_value, best_move, alpha, beta);
     return NegaMaxResult::new(best_value, nodes);
 }
 

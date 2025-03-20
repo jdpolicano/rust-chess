@@ -53,7 +53,10 @@ impl From<u64> for NodeType {
             0 => NodeType::Exact,
             1 => NodeType::LowerBound,
             2 => NodeType::UpperBound,
-            _ => panic!("Invalid node type"),
+            _ => {
+                println!("Invalid node type {}", byte);
+                panic!("Invalid conversion to NodeType");
+            }
         }
     }
 }
@@ -76,6 +79,7 @@ impl Default for TTEntry {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct TTData {
     pub depth: u8,
     pub score: i16,
@@ -158,6 +162,9 @@ impl TT {
     ) {
         let entry = unsafe { self.table.get_unchecked((hash as usize) & self.mask) };
         let mut entry = entry.lock().expect("lock to not be poisoned inside tt");
+        if TTData::from(entry.value).depth > depth {
+            return;
+        }
         let node_type = if score <= original_alpha {
             NodeType::UpperBound
         } else if score >= beta {
@@ -170,49 +177,6 @@ impl TT {
     }
 }
 
-// impl TableEntry {
-//     pub fn new(depth: u8, score: i32, m: ChessMove, original_alpha: i32, beta: i32) -> Self {
-//         let node_type = if score <= original_alpha {
-//             NodeType::UpperBound
-//         } else if score >= beta {
-//             NodeType::LowerBound
-//         } else {
-//             NodeType::Exact
-//         };
-//         return Self {
-//             depth,
-//             score,
-//             m,
-//             node_type,
-//             age: Instant::now(),
-//             lock: Mutex::new(()),
-//         };
-//     }
-
-//     pub fn lock(&self) -> std::sync::MutexGuard<()> {
-//         return self.lock.lock().expect("lock to not be poisoned inside tt");
-//     }
-// }
-
-// impl PartialEq for TableEntry {
-//     fn eq(&self, other: &Self) -> bool {
-//         return self.depth == other.depth
-//             && self.score == other.score
-//             && self.m == other.m
-//             && self.node_type == other.node_type
-//             && self.age == other.age;
-//     }
-// }
-
-// impl PartialOrd for TableEntry {
-//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-//         return Some(self.age.cmp(&other.age));
-//     }
-// }
-
-// pub struct TranspositionTable {
-//     table: CacheTable<TableEntry>,
-// }
 fn pack_move(m: ChessMove, score: i16, depth: u8, t: NodeType) -> u64 {
     let promotion = match m.get_promotion() {
         Some(p) => match p {
@@ -229,10 +193,125 @@ fn pack_move(m: ChessMove, score: i16, depth: u8, t: NodeType) -> u64 {
     let score = score as u64;
     let depth = depth as u64;
 
-    return promotion << PROMOTION_SHIFT
-        | dest << DESTINATION_SHIFT
-        | orig << ORIGIN_SHIFT
-        | score << SCORE_SHIFT
-        | depth << DEPTH_SHIFT
-        | (t.to_byte() as u64) << TYPE_SHIFT;
+    return (promotion << PROMOTION_SHIFT & PROMOTION_MASK)
+        | (dest << DESTINATION_SHIFT & DESTINATION_MASK)
+        | (orig << ORIGIN_SHIFT & ORIGIN_MASK)
+        | (score << SCORE_SHIFT & SCORE_MASK)
+        | (depth << DEPTH_SHIFT & DEPTH_MASK)
+        | ((t.to_byte() as u64) << TYPE_SHIFT & TYPE_MASK);
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use chess::{File, Rank, Square};
+    #[test]
+    fn packing_moves_simple() {
+        let e2 = Square::make_square(Rank::Second, File::E);
+        let e4 = Square::make_square(Rank::Second, File::E);
+        let m = ChessMove::new(e2, e4, None);
+        let score = 250;
+        let depth = 5;
+        let node_type = NodeType::Exact;
+        let packed = pack_move(m, score, depth, node_type);
+        let unpacked = TTData::from(packed);
+        assert_eq!(
+            TTData {
+                depth,
+                score,
+                m,
+                node_type
+            },
+            unpacked
+        );
+    }
+
+    #[test]
+    fn packing_moves_simple_neg() {
+        let e2 = Square::make_square(Rank::Second, File::E);
+        let e4 = Square::make_square(Rank::Second, File::E);
+        let m = ChessMove::new(e2, e4, None);
+        let score = -250;
+        let depth = 5;
+        let node_type = NodeType::Exact;
+        let packed = pack_move(m, score, depth, node_type);
+        println!("{:#b}", ((packed & TYPE_MASK) >> TYPE_SHIFT));
+        let unpacked = TTData::from(packed);
+        assert_eq!(
+            TTData {
+                depth,
+                score,
+                m,
+                node_type
+            },
+            unpacked
+        );
+    }
+
+    #[test]
+    fn packing_moves_simple_node_type() {
+        let e2 = Square::make_square(Rank::Second, File::E);
+        let e4 = Square::make_square(Rank::Second, File::E);
+        let m = ChessMove::new(e2, e4, None);
+        let score = 250;
+        let depth = 5;
+        let mut node_type = NodeType::Exact;
+        let mut packed = pack_move(m, score, depth, node_type);
+        let mut unpacked = TTData::from(packed);
+        assert_eq!(
+            TTData {
+                depth,
+                score,
+                m,
+                node_type
+            },
+            unpacked
+        );
+        node_type = NodeType::LowerBound;
+        packed = pack_move(m, score, depth, node_type);
+        unpacked = TTData::from(packed);
+        assert_eq!(
+            TTData {
+                depth,
+                score,
+                m,
+                node_type
+            },
+            unpacked
+        );
+        node_type = NodeType::UpperBound;
+        packed = pack_move(m, score, depth, node_type);
+        unpacked = TTData::from(packed);
+        assert_eq!(
+            TTData {
+                depth,
+                score,
+                m,
+                node_type
+            },
+            unpacked
+        );
+    }
+
+    #[test]
+    fn packing_moves_with_promo() {
+        let e2 = Square::make_square(Rank::Second, File::E);
+        let e4 = Square::make_square(Rank::Second, File::E);
+        let promo = Some(Piece::Knight);
+        let m = ChessMove::new(e2, e4, promo);
+        let score = 250;
+        let depth = 5;
+        let node_type = NodeType::Exact;
+        let packed = pack_move(m, score, depth, node_type);
+        let unpacked = TTData::from(packed);
+        assert_eq!(
+            TTData {
+                depth,
+                score,
+                m,
+                node_type
+            },
+            unpacked
+        );
+    }
 }
