@@ -1,21 +1,21 @@
 use super::score::piece_value;
 use chess::{Color, File, Piece, Rank, NUM_RANKS};
 // basic piece values.
-pub const PAWN: i32 = 100;
-pub const KNIGHT: i32 = 320;
-pub const BISHOP: i32 = 330;
-pub const ROOK: i32 = 500;
-pub const QUEEN: i32 = 900;
-pub const KING: i32 = 20000;
+pub const PAWN: i16 = 100;
+pub const KNIGHT: i16 = 320;
+pub const BISHOP: i16 = 330;
+pub const ROOK: i16 = 500;
+pub const QUEEN: i16 = 900;
+pub const KING: i16 = 20000;
 
-pub struct PieceTable([i32; 64]);
+pub struct PieceTable([i16; 64]);
 
 fn flip_rank(r: Rank) -> usize {
     return NUM_RANKS - r.to_index() - 1;
 }
 
 impl PieceTable {
-    pub fn eval_position(&self, color: Color, rank: Rank, file: File) -> i32 {
+    pub fn eval_position(&self, color: Color, rank: Rank, file: File) -> i16 {
         let (r_idx, f_idx) = if color == Color::White {
             (flip_rank(rank), file.to_index())
         } else {
@@ -25,13 +25,13 @@ impl PieceTable {
         return self.at_index(rc);
     }
 
-    pub fn eval_with_piece(&self, piece: Piece, color: Color, rank: Rank, file: File) -> i32 {
+    pub fn eval_with_piece(&self, piece: Piece, color: Color, rank: Rank, file: File) -> i16 {
         let piece_value = piece_value(piece);
         let position_value = self.eval_position(color, rank, file);
         return piece_value + position_value;
     }
 
-    pub fn at_index(&self, idx: usize) -> i32 {
+    pub fn at_index(&self, idx: usize) -> i16 {
         return self.0[idx];
     }
 }

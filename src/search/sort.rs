@@ -18,11 +18,11 @@ pub fn get_mvv_lva_score(victim: u8, attacker: u8) -> u8 {
 pub fn get_sorted_moves(board: &Board) -> Vec<ChessMove> {
     let mut moves = MoveGen::new_legal(&board).collect::<Vec<ChessMove>>();
     moves.sort_by(|a, b| {
-        let victim_a = board.piece_on(b.get_dest()).map(|p| p as u8).unwrap_or(6);
+        let victim_a = board.piece_on(a.get_dest()).map(|p| p as u8).unwrap_or(6);
         let attacker_a = board.piece_on(a.get_source()).map(|p| p as u8).unwrap_or(6);
-        let victim_b = board.piece_on(a.get_dest()).map(|p| p as u8).unwrap_or(6);
+        let victim_b = board.piece_on(b.get_dest()).map(|p| p as u8).unwrap_or(6);
         let attacker_b = board.piece_on(b.get_source()).map(|p| p as u8).unwrap_or(6);
-        get_mvv_lva_score(victim_a, attacker_a).cmp(&get_mvv_lva_score(victim_b, attacker_b))
+        get_mvv_lva_score(victim_b, attacker_b).cmp(&get_mvv_lva_score(victim_a, attacker_a))
     });
     return moves;
 }

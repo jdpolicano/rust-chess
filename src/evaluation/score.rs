@@ -80,7 +80,7 @@ impl MoveInfo {
     }
 }
 
-pub fn piece_value(piece: Piece) -> i32 {
+pub fn piece_value(piece: Piece) -> i16 {
     match piece {
         Piece::Pawn => PAWN,
         Piece::Knight => KNIGHT,
@@ -91,7 +91,7 @@ pub fn piece_value(piece: Piece) -> i32 {
     }
 }
 
-pub fn score_piece_position(piece: Piece, color: Color, rank: Rank, file: File) -> i32 {
+pub fn score_piece_position(piece: Piece, color: Color, rank: Rank, file: File) -> i16 {
     match piece {
         Piece::Pawn => PAWN_TABLE.eval_with_piece(piece, color, rank, file),
         Piece::Knight => KNIGHT_TABLE.eval_with_piece(piece, color, rank, file),
@@ -102,7 +102,7 @@ pub fn score_piece_position(piece: Piece, color: Color, rank: Rank, file: File) 
     }
 }
 
-pub fn score_board_position(board: &Board) -> (i32, i32) {
+pub fn score_board_position(board: &Board) -> (i16, i16) {
     let mut white = 0;
     let mut black = 0;
     for r in 0..8 {
@@ -126,7 +126,7 @@ pub fn score_board_position(board: &Board) -> (i32, i32) {
 }
 
 /// returns the change in positional score after a capture relative to the opponent
-pub fn score_capture_diff(info: &MoveInfo) -> i32 {
+pub fn score_capture_diff(info: &MoveInfo) -> i16 {
     let capture_score = info.move_events.capture.as_ref().map(|c| {
         score_piece_position(
             c.piece,
@@ -139,7 +139,7 @@ pub fn score_capture_diff(info: &MoveInfo) -> i32 {
 }
 
 /// Returns the position change from the perspective of the color to move
-pub fn score_position_diff(info: &MoveInfo) -> i32 {
+pub fn score_position_diff(info: &MoveInfo) -> i16 {
     // the score of the original position of the piece.
     let start_score = score_piece_position(
         info.piece,

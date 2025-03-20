@@ -2,6 +2,7 @@ use super::alpha_beta::{nega_max, NegaMaxResult, MIN_SCORE};
 use super::context::SearchContext;
 use super::history::MoveHistory;
 use crate::engine::ThreadHandler;
+use crate::transposition::TT;
 use crate::uci::UciCommand;
 use crate::util::task_must_stop;
 use chess::{Board, ChessMove, MoveGen};
@@ -61,6 +62,8 @@ pub struct SearchRequest {
     pub board: Board,
     // moves to apply on top of the current position.
     pub position_history: Vec<u64>,
+    // the current transposition table.
+    pub tt: Arc<TT>,
     // a control signal to cancel the request at any point.
     pub signal: Arc<AtomicBool>,
 }
@@ -70,12 +73,14 @@ impl SearchRequest {
         ctrl: SearchControl,
         board: Board,
         position_history: Vec<u64>,
+        tt: Arc<TT>,
         signal: Arc<AtomicBool>,
     ) -> Self {
         Self {
             ctrl,
             board,
             position_history,
+            tt,
             signal,
         }
     }
@@ -272,8 +277,10 @@ impl Search {
         let ctx = SearchContext::from_board(
             request.board.make_move_new(*m),
             history,
+            1, // depth is 1 because we're searching one move in from the root.
             timeout,
             request.signal.clone(),
+            request.tt.clone(),
         );
         let info = -nega_max(ctx, depth, MIN_SCORE, -MIN_SCORE);
         MoveScore::new(*m, info)

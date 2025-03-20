@@ -2,6 +2,7 @@ use crate::{
     search::handler::{
         Search, SearchCommand, SearchControl, SearchHandler, SearchRequest, SearchResponse,
     },
+    transposition::TT,
     uci::{Uci, UciCommand, UciHandler},
 };
 use chess::{Board, ChessMove};
@@ -29,6 +30,7 @@ pub struct Engine {
     board: Option<Board>,
     moves: Vec<ChessMove>,
     positions: Vec<u64>,
+    tt: Arc<TT>,
     quit: bool,
 }
 
@@ -41,6 +43,7 @@ impl Engine {
         let moves = Vec::new();
         let positions = Vec::new();
         let search_sig = Arc::new(AtomicBool::new(false));
+        let tt = Arc::new(TT::new(1 << 20)); // 1MB or 1m entries. each entry is a mutex plus two 64-bit integers
         Engine {
             eng_config,
             search_handler,
@@ -49,6 +52,7 @@ impl Engine {
             board,
             moves,
             positions,
+            tt,
             quit: false,
         }
     }
@@ -166,6 +170,7 @@ impl Engine {
             ctrl,
             self.board.unwrap().clone(),
             self.positions.clone(),
+            self.tt.clone(),
             self.search_sig.clone(),
         );
         SearchCommand::Search(req)

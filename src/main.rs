@@ -2,6 +2,7 @@ mod engine;
 mod evaluation;
 mod pgn;
 mod search;
+mod transposition;
 mod uci;
 mod util;
 
