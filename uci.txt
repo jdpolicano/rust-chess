@@ -541,3 +541,8 @@ This is why the castle rights are specified with the letter of the castle rook's
 Upper case letters for white's and lower case letters for black's castling rights.
 Example: The normal chess position would be:
 rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w AHah -
+
+
+
+position startpos moves g1f3 e7e6 b1c3 d7d5 d2d4 f8b4 c1d2 b8c6 e2e3 g8e7 f1d3 b4c3 d2c3 e8g8 e1g1 a7a5 d1e2 a5a4 e3e4 d5e4 e2e4 e7g6 f1e1 f8e8 a1d1 c8d7 e4e3 c6e7 d3g6 e7g6 f3e5 g6e5 d4e5 d8e7 e3f4 d7b5 c3b4 c7c5 b4c3 h7h6 f4e4 a8d8 d1d8 e8d8 e4g4 a4a3 b2a3 d8a8 c3b2 a8a4 g4g3 b5c6 b2c1 g8h8 c1b2 e7d8 e1f1 d8d5 g3f3 d5f3 g2f3 a4c4 f1c1 c6f3 h2h3 f3c6 b2a1 h8h7 a1b2 g7g5 g1h2 h7g6 h2g3 c4f4 c1f1 f4f3 g3h2 g6h5 a3a4 h5h4 h2g1 h6h5 a4a5 f3h3 f2f3 h4g3 b2c3 c6f3 c3e1 g3f4 e1d2 f4g4 d2c3 h5h4 a2a3 h3h1 g1f2 h1h2 f2e3 h2e2 e3d3 h4h3 a5a6 b7a6 f1g1 g4f4 c3e1 e2e1 g1e1 g5g4 d3c4 h3h2 c4c5 g4g3 c5d6 g3g2 d6c5 g2g1q e1g1 h2g1q c5d6 g1b6 d6e7 f4e5 e7e8 b6c7 e8f8 e5f6 f8g8 f7g3 g8h8 g3g7
+go movetime 10000

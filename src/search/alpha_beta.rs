@@ -8,7 +8,7 @@ use std::ops::Neg;
 
 pub const MIN_SCORE: i16 = i16::MIN + i8::MAX as i16;
 pub const CHECKMATE_SCORE: i16 = MIN_SCORE + i8::MAX as i16;
-pub const MAX_PLY: u8 = 64; // for now I'd be lucky to get this far.
+pub const MAX_PLY: u8 = u8::MAX; // for now I'd be lucky to get this far.
 pub const CHECK_TERMINATION: u64 = 0x7FF; // 2.047 nodes
 
 #[derive(Debug)]
@@ -40,26 +40,9 @@ impl Neg for NegaMaxResult {
 }
 
 pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, mut beta: i16) -> NegaMaxResult {
-    if let Some(te) = ctx.tt.get(ctx.hash) {
-        if te.depth >= ctx.depth {
-            match te.node_type {
-                NodeType::Exact => {
-                    return NegaMaxResult::new(te.score, 0);
-                }
-                NodeType::LowerBound => {
-                    alpha = alpha.max(te.score);
-                }
-                NodeType::UpperBound => {
-                    beta = beta.min(te.score);
-                }
-            }
-            if alpha >= beta {
-                return NegaMaxResult::new(te.score, 0);
-            }
-        }
-    }
-
     let mg = get_sorted_moves(&ctx.board);
+
+    println!("{}", ctx.board.checkers());
 
     // check for checkmate or draw
     if mg.len() == 0 {
@@ -68,25 +51,17 @@ pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, mut beta: i16
         } else {
             NegaMaxResult::new_draw()
         };
-        ctx.tt.set(
-            ctx.hash,
-            ctx.depth,
-            res.score,
-            ChessMove::default(),
-            alpha,
-            beta,
-        );
         return res;
-    }
-
-    // check for repetition
-    if ctx.history.seen_times(ctx.hash) >= 3 {
-        return NegaMaxResult::new_draw();
     }
 
     // check for depth cutoff
     if depth == 0 {
         return quiescence_search(ctx, alpha, beta);
+    }
+
+    // check for repetition
+    if ctx.history.seen_times(ctx.hash) >= 3 {
+        return NegaMaxResult::new_draw();
     }
 
     let mut max_score = MIN_SCORE;
@@ -120,29 +95,11 @@ pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, mut beta: i16
     }
 
     ctx.tt
-        .set(ctx.hash, ctx.depth, max_score, best_move, alpha, beta);
+        .set(ctx.hash, depth, max_score, best_move, alpha, beta);
     NegaMaxResult::new(max_score, nodes)
 }
 
-pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, mut beta: i16) -> NegaMaxResult {
-    if let Some(te) = ctx.tt.get(ctx.hash) {
-        if te.depth >= ctx.depth {
-            match te.node_type {
-                NodeType::Exact => {
-                    return NegaMaxResult::new(te.score, 0);
-                }
-                NodeType::LowerBound => {
-                    alpha = alpha.max(te.score);
-                }
-                NodeType::UpperBound => {
-                    beta = beta.min(te.score);
-                }
-            }
-            if alpha >= beta {
-                return NegaMaxResult::new(te.score, 0);
-            }
-        }
-    }
+pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, beta: i16) -> NegaMaxResult {
     let stand_pat = ctx.board_score();
     let mut best_value = stand_pat;
 
@@ -160,7 +117,6 @@ pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, mut beta: i16) 
 
     let mg = get_sorted_moves(&ctx.board);
     let mut nodes = 0;
-    let mut best_move = ChessMove::default();
     for m in mg {
         if !is_capture(&m, &ctx.board) {
             continue;
@@ -174,7 +130,6 @@ pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, mut beta: i16) 
         nodes += child.nodes + 1;
         if child.score > best_value {
             best_value = child.score;
-            best_move = m;
         }
         if child.score > alpha {
             alpha = child.score;
@@ -184,8 +139,6 @@ pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, mut beta: i16) 
         }
     }
 
-    ctx.tt
-        .set(ctx.hash, ctx.depth, best_value, best_move, alpha, beta);
     return NegaMaxResult::new(best_value, nodes);
 }
 

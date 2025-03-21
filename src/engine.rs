@@ -43,7 +43,7 @@ impl Engine {
         let moves = Vec::new();
         let positions = Vec::new();
         let search_sig = Arc::new(AtomicBool::new(false));
-        let tt = Arc::new(TT::new(1 << 20)); // 1MB or 1m entries. each entry is a mutex plus two 64-bit integers
+        let tt = Arc::new(TT::new(1 << 10)); // 1MB or 1m entries. each entry is a mutex plus two 64-bit integers
         Engine {
             eng_config,
             search_handler,
