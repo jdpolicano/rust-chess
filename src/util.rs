@@ -3,13 +3,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+// determines if a move is a capture then returns true
 pub fn is_capture(m: &ChessMove, b: &Board) -> bool {
-    let op = BitBoard::from_square(m.get_dest());
-    b.combined() & op != EMPTY
+    return piece_is_on_dest(m, b) || move_is_en_passant(m, b);
 }
 
-pub fn is_check(b: &Board) -> bool {
-    *b.checkers() != EMPTY
+fn piece_is_on_dest(m: &ChessMove, b: &Board) -> bool {
+    let op = BitBoard::from_square(m.get_dest());
+    (b.combined() & op) != EMPTY
+}
+
+fn move_is_en_passant(m: &ChessMove, b: &Board) -> bool {
+    if let Some(ep) = b.en_passant() {
+        return m.get_dest() == ep;
+    }
+    return false;
 }
 
 pub fn task_must_stop(time: &Option<Instant>, signal: &Arc<AtomicBool>) -> bool {

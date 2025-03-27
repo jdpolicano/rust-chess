@@ -4,20 +4,18 @@ use std::rc::Rc;
 
 #[derive(Debug, Clone)]
 pub struct MoveHistory {
-    moves: Rc<UnsafeCell<[u64; MAX_PLY as usize]>>,
-    len: usize,
+    moves: Rc<UnsafeCell<Vec<u64>>>,
 }
 
 impl MoveHistory {
-    pub fn new() -> Self {
+    pub fn new(len: usize) -> Self {
         Self {
-            moves: Rc::new(UnsafeCell::new([0; MAX_PLY as usize])),
-            len: 0,
+            moves: Rc::new(UnsafeCell::new(Vec::with_capacity(len + MAX_PLY as usize))),
         }
     }
 
     pub fn from_vec(positions: &[u64]) -> Self {
-        let mut history = Self::new();
+        let history = Self::new(positions.len());
         for &m in positions.iter() {
             history.push(m);
         }
@@ -25,17 +23,14 @@ impl MoveHistory {
     }
 
     // Unsafe methods that allow interior mutation without runtime checks.
-    pub fn push(&mut self, b_hash: u64) {
-        unsafe { (*self.moves.get())[self.len] = b_hash };
-        self.len += 1;
+    pub fn push(&self, b_hash: u64) {
+        unsafe {
+            (*self.moves.get()).push(b_hash);
+        };
     }
 
-    pub fn pop(&mut self) -> Option<u64> {
-        if self.len == 0 {
-            return None;
-        }
-        self.len -= 1;
-        Some(unsafe { (*self.moves.get())[self.len] })
+    pub fn pop(&self) -> Option<u64> {
+        unsafe { (*self.moves.get()).pop() }
     }
 
     pub fn seen_times(&self, hash: u64) -> u8 {
@@ -43,7 +38,7 @@ impl MoveHistory {
     }
 
     pub fn len(&self) -> usize {
-        self.len
+        unsafe { (*self.moves.get()).len() }
     }
 }
 
@@ -53,7 +48,7 @@ mod test {
 
     #[test]
     fn test_move_history() {
-        let mut history = MoveHistory::new();
+        let mut history = MoveHistory::new(10);
         history.push(1);
         history.push(2);
         history.push(3);
@@ -62,7 +57,7 @@ mod test {
 
     #[test]
     fn test_move_history_pop() {
-        let mut history = MoveHistory::new();
+        let mut history = MoveHistory::new(10);
         history.push(1);
         history.push(2);
         history.push(3);
@@ -74,7 +69,7 @@ mod test {
 
     #[test]
     fn test_move_history_seen_times() {
-        let mut history = MoveHistory::new();
+        let mut history = MoveHistory::new(10);
         history.push(1);
         history.push(2);
         history.push(3);

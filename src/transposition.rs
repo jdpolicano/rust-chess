@@ -1,39 +1,6 @@
 use chess::{ChessMove, Piece, Square};
 use std::sync::Mutex;
 
-// 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 1111 - promotion option (4 bits)
-// 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 1111 1111 0000 - destination square (8 bits)
-// 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 1111 1111 0000 0000 0000 - origin square (8 bits)
-// 0000 0000 0000 0000 0000 0000 0000 1111 1111 1111 1111 0000 0000 0000 0000 0000 - score (16 bits)
-// 0000 0000 0000 0000 0000 1111 1111 0000 0000 0000 0000 0000 0000 0000 0000 0000 - depth (8 bits)
-// 0000 0000 0000 0000 1111 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 - type (4 bits)
-// Promotion: bits 0-3
-const PROMOTION_MASK: u64 = 0x000000000000000F;
-
-// Destination square: bits 4-11
-const DESTINATION_MASK: u64 = 0x0000000000000FF0;
-
-// Origin square: bits 12-19
-const ORIGIN_MASK: u64 = 0x00000000000FF000;
-
-// Score: bits 20-35
-const SCORE_MASK: u64 = 0x0000000FFFF00000;
-
-// Depth: bits 36-43
-const DEPTH_MASK: u64 = 0x00000FF000000000;
-
-// Type: bits 44-47
-const TYPE_MASK: u64 = 0x0000F00000000000;
-
-// the bit for options on the promotion
-
-const PROMOTION_SHIFT: u8 = 0;
-const DESTINATION_SHIFT: u8 = 4;
-const ORIGIN_SHIFT: u8 = 12;
-const SCORE_SHIFT: u8 = 20;
-const DEPTH_SHIFT: u8 = 36;
-const TYPE_SHIFT: u8 = 44;
-
 #[derive(Debug, Clone, PartialEq, PartialOrd, Copy)]
 pub enum NodeType {
     Exact,
@@ -41,45 +8,28 @@ pub enum NodeType {
     UpperBound,
 }
 
-impl NodeType {
-    pub fn to_byte(&self) -> u8 {
-        *self as u8
-    }
-}
-
-impl From<u64> for NodeType {
-    fn from(byte: u64) -> Self {
-        match byte {
-            0 => NodeType::Exact,
-            1 => NodeType::LowerBound,
-            2 => NodeType::UpperBound,
-            _ => {
-                println!("Invalid node type {}", byte);
-                panic!("Invalid conversion to NodeType");
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct TTEntry {
     pub hash: u64,
-    pub value: u64,
+    pub value: TTData,
 }
 
 impl TTEntry {
-    pub fn new(hash: u64, value: u64) -> Self {
+    pub fn new(hash: u64, value: TTData) -> Self {
         Self { hash, value }
     }
 }
 
 impl Default for TTEntry {
     fn default() -> Self {
-        Self { hash: 0, value: 0 }
+        Self {
+            hash: 0,
+            value: TTData::default(),
+        }
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TTData {
     pub depth: u8,
     pub score: i16,
@@ -87,43 +37,20 @@ pub struct TTData {
     pub node_type: NodeType,
 }
 
-impl TTData {
-    fn make_square(sq: u64) -> Square {
-        assert!(sq < 64, "Square index out of bounds: {}", sq);
-        unsafe { Square::new(sq as u8) }
-    }
-
-    fn make_piece(p: u64) -> Option<Piece> {
-        match p {
-            1 => Some(Piece::Knight),
-            2 => Some(Piece::Bishop),
-            3 => Some(Piece::Rook),
-            4 => Some(Piece::Queen),
-            _ => None,
+impl Default for TTData {
+    fn default() -> Self {
+        Self {
+            depth: 0,
+            score: 0,
+            m: ChessMove::default(),
+            node_type: NodeType::Exact,
         }
-    }
-}
-
-impl From<u64> for TTData {
-    fn from(packed: u64) -> Self {
-        let depth = (packed & DEPTH_MASK) >> DEPTH_SHIFT;
-        let score = (packed & SCORE_MASK) >> SCORE_SHIFT;
-        let dest = Self::make_square((packed & DESTINATION_MASK) >> DESTINATION_SHIFT);
-        let orig = Self::make_square((packed & ORIGIN_MASK) >> ORIGIN_SHIFT);
-        let promotion = Self::make_piece((packed & PROMOTION_MASK) >> PROMOTION_SHIFT);
-        let node_type: NodeType = ((packed & TYPE_MASK) >> TYPE_SHIFT).into();
-        return Self {
-            depth: depth as u8,
-            score: score as i16,
-            m: ChessMove::new(orig, dest, promotion),
-            node_type,
-        };
     }
 }
 
 #[derive(Debug)]
 pub struct TT {
-    table: Box<[Mutex<TTEntry>]>,
+    table: Box<[Mutex<Option<TTEntry>>]>,
     mask: usize,
 }
 
@@ -134,7 +61,7 @@ impl TT {
         }
         let mut table = Vec::with_capacity(size);
         for _ in 0..size {
-            table.push(Mutex::new(TTEntry::default()));
+            table.push(Mutex::new(None));
         }
         return Self {
             table: table.into_boxed_slice(),
@@ -145,8 +72,10 @@ impl TT {
     pub fn get(&self, hash: u64) -> Option<TTData> {
         let entry = unsafe { self.table.get_unchecked((hash as usize) & self.mask) };
         let entry = entry.lock().expect("lock to not be poisoned inside tt");
-        if entry.hash == hash {
-            return Some(TTData::from(entry.value));
+        if let Some(e) = entry.as_ref() {
+            if e.hash == hash {
+                return Some(e.value);
+            }
         }
         return None;
     }
@@ -162,156 +91,34 @@ impl TT {
     ) {
         let entry = unsafe { self.table.get_unchecked((hash as usize) & self.mask) };
         let mut entry = entry.lock().expect("lock to not be poisoned inside tt");
-        if TTData::from(entry.value).depth > depth {
+        if let Some(e) = entry.as_mut() {
+            if e.value.depth > depth {
+                return;
+            }
+            let node_type = if score <= original_alpha {
+                NodeType::UpperBound
+            } else if score >= beta {
+                NodeType::LowerBound
+            } else {
+                NodeType::Exact
+            };
+            e.hash = hash;
+            e.value = TTData {
+                depth,
+                score,
+                m,
+                node_type,
+            };
             return;
         }
-        let node_type = if score <= original_alpha {
-            NodeType::UpperBound
-        } else if score >= beta {
-            NodeType::LowerBound
-        } else {
-            NodeType::Exact
-        };
-        entry.hash = hash;
-        entry.value = pack_move(m, score, depth, node_type);
-    }
-}
-
-fn pack_move(m: ChessMove, score: i16, depth: u8, t: NodeType) -> u64 {
-    let promotion = match m.get_promotion() {
-        Some(p) => match p {
-            Piece::Knight => 1,
-            Piece::Bishop => 2,
-            Piece::Rook => 3,
-            Piece::Queen => 4,
-            _ => 6, // for none.
-        },
-        _ => 6, // for none.
-    };
-    let dest = m.get_dest().to_index() as u64;
-    let orig = m.get_source().to_index() as u64;
-    let score = score as u64;
-    let depth = depth as u64;
-
-    return (promotion << PROMOTION_SHIFT & PROMOTION_MASK)
-        | (dest << DESTINATION_SHIFT & DESTINATION_MASK)
-        | (orig << ORIGIN_SHIFT & ORIGIN_MASK)
-        | (score << SCORE_SHIFT & SCORE_MASK)
-        | (depth << DEPTH_SHIFT & DEPTH_MASK)
-        | ((t.to_byte() as u64) << TYPE_SHIFT & TYPE_MASK);
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use chess::{File, Rank, Square};
-    #[test]
-    fn packing_moves_simple() {
-        let e2 = Square::make_square(Rank::Second, File::E);
-        let e4 = Square::make_square(Rank::Second, File::E);
-        let m = ChessMove::new(e2, e4, None);
-        let score = 250;
-        let depth = 5;
-        let node_type = NodeType::Exact;
-        let packed = pack_move(m, score, depth, node_type);
-        let unpacked = TTData::from(packed);
-        assert_eq!(
+        *entry = Some(TTEntry::new(
+            hash,
             TTData {
                 depth,
                 score,
                 m,
-                node_type
+                node_type: NodeType::Exact,
             },
-            unpacked
-        );
-    }
-
-    #[test]
-    fn packing_moves_simple_neg() {
-        let e2 = Square::make_square(Rank::Second, File::E);
-        let e4 = Square::make_square(Rank::Second, File::E);
-        let m = ChessMove::new(e2, e4, None);
-        let score = -250;
-        let depth = 5;
-        let node_type = NodeType::Exact;
-        let packed = pack_move(m, score, depth, node_type);
-        println!("{:#b}", ((packed & TYPE_MASK) >> TYPE_SHIFT));
-        let unpacked = TTData::from(packed);
-        assert_eq!(
-            TTData {
-                depth,
-                score,
-                m,
-                node_type
-            },
-            unpacked
-        );
-    }
-
-    #[test]
-    fn packing_moves_simple_node_type() {
-        let e2 = Square::make_square(Rank::Second, File::E);
-        let e4 = Square::make_square(Rank::Second, File::E);
-        let m = ChessMove::new(e2, e4, None);
-        let score = 250;
-        let depth = 5;
-        let mut node_type = NodeType::Exact;
-        let mut packed = pack_move(m, score, depth, node_type);
-        let mut unpacked = TTData::from(packed);
-        assert_eq!(
-            TTData {
-                depth,
-                score,
-                m,
-                node_type
-            },
-            unpacked
-        );
-        node_type = NodeType::LowerBound;
-        packed = pack_move(m, score, depth, node_type);
-        unpacked = TTData::from(packed);
-        assert_eq!(
-            TTData {
-                depth,
-                score,
-                m,
-                node_type
-            },
-            unpacked
-        );
-        node_type = NodeType::UpperBound;
-        packed = pack_move(m, score, depth, node_type);
-        unpacked = TTData::from(packed);
-        assert_eq!(
-            TTData {
-                depth,
-                score,
-                m,
-                node_type
-            },
-            unpacked
-        );
-    }
-
-    #[test]
-    fn packing_moves_with_promo() {
-        let e2 = Square::make_square(Rank::Second, File::E);
-        let e4 = Square::make_square(Rank::Second, File::E);
-        let promo = Some(Piece::Knight);
-        let m = ChessMove::new(e2, e4, promo);
-        let score = 250;
-        let depth = 5;
-        let node_type = NodeType::Exact;
-        let packed = pack_move(m, score, depth, node_type);
-        let unpacked = TTData::from(packed);
-        assert_eq!(
-            TTData {
-                depth,
-                score,
-                m,
-                node_type
-            },
-            unpacked
-        );
+        ));
     }
 }

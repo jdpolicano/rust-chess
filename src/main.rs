@@ -1,3 +1,4 @@
+mod chess;
 mod engine;
 mod evaluation;
 mod pgn;

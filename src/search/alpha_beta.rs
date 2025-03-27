@@ -1,15 +1,13 @@
-use chess::ChessMove;
-
 use super::context::SearchContext;
-use super::sort::get_sorted_moves;
 use crate::transposition::NodeType;
-use crate::util::{is_capture, is_check, task_must_stop};
+use crate::util::{is_capture, task_must_stop};
+use chess::ChessMove;
 use std::ops::Neg;
 
 pub const MIN_SCORE: i16 = i16::MIN + i8::MAX as i16;
 pub const CHECKMATE_SCORE: i16 = MIN_SCORE + i8::MAX as i16;
 pub const MAX_PLY: u8 = u8::MAX; // for now I'd be lucky to get this far.
-pub const CHECK_TERMINATION: u64 = 0x7FF; // 2.047 nodes
+pub const CHECK_TERMINATION: u64 = 0x7ff; // 2047 nodes before checking for termination
 
 #[derive(Debug)]
 pub struct NegaMaxResult {
@@ -39,19 +37,13 @@ impl Neg for NegaMaxResult {
     }
 }
 
-pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, mut beta: i16) -> NegaMaxResult {
-    let mg = get_sorted_moves(&ctx.board);
+pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, beta: i16) -> NegaMaxResult {
+    if ctx.board.checkmate {
+        return NegaMaxResult::new_checkmate(depth);
+    }
 
-    println!("{}", ctx.board.checkers());
-
-    // check for checkmate or draw
-    if mg.len() == 0 {
-        let res = if is_check(&ctx.board) {
-            NegaMaxResult::new_checkmate(depth)
-        } else {
-            NegaMaxResult::new_draw()
-        };
-        return res;
+    if ctx.board.stalemate || ctx.board.check_threefold() {
+        return NegaMaxResult::new_draw();
     }
 
     // check for depth cutoff
@@ -59,49 +51,46 @@ pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, mut beta: i16
         return quiescence_search(ctx, alpha, beta);
     }
 
-    // check for repetition
-    if ctx.history.seen_times(ctx.hash) >= 3 {
-        return NegaMaxResult::new_draw();
-    }
-
     let mut max_score = MIN_SCORE;
     let mut nodes = 0;
+    let mut term_count = 0;
     let mut best_move = ChessMove::default();
-    for m in mg {
+    ctx.board.sort_moves();
+    for m in &ctx.board.moves {
         // create a new context with the move applied
         // perform the nega_max search on the new context
         // remove the move from the history stack
         let next_ctx = ctx.apply_move_new(&m);
-        ctx.history.push(next_ctx.hash);
         let child = -nega_max(next_ctx, depth - 1, -beta, -alpha);
-        ctx.history.pop();
-        // update the max score and alpha
+        ctx.board.history_ref.pop();
+        // update stats for diagnostics
         nodes += child.nodes + 1;
+        term_count += child.nodes + 1;
+        // update the best move and score
         if child.score > max_score {
             max_score = child.score;
-            best_move = m;
+            best_move = *m;
         }
-        if child.score > alpha {
-            alpha = child.score;
+        if max_score > alpha {
+            alpha = max_score;
         }
-        // if we have a cutoff, return the result
         if alpha >= beta {
             break;
         }
 
-        if (CHECK_TERMINATION & nodes == 0) && task_must_stop(&ctx.time, &ctx.signal) {
-            return NegaMaxResult::new(max_score, nodes);
+        if term_count >= CHECK_TERMINATION {
+            term_count = 0;
+            if task_must_stop(&ctx.time, &ctx.signal) {
+                break;
+            }
         }
     }
 
-    ctx.tt
-        .set(ctx.hash, depth, max_score, best_move, alpha, beta);
     NegaMaxResult::new(max_score, nodes)
 }
 
 pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, beta: i16) -> NegaMaxResult {
     let stand_pat = ctx.board_score();
-    let mut best_value = stand_pat;
 
     if stand_pat >= beta {
         return NegaMaxResult::new(stand_pat, 0);
@@ -111,28 +100,32 @@ pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, beta: i16) -> N
         alpha = stand_pat;
     }
 
-    if ctx.history.seen_times(ctx.hash) >= 3 {
+    if ctx.board.checkmate {
+        return NegaMaxResult::new_checkmate(0);
+    }
+
+    if ctx.board.stalemate || ctx.board.check_threefold() {
         return NegaMaxResult::new_draw();
     }
 
-    let mg = get_sorted_moves(&ctx.board);
+    ctx.board.sort_moves();
+    let mut best_value = stand_pat;
     let mut nodes = 0;
-    for m in mg {
-        if !is_capture(&m, &ctx.board) {
+    for m in &ctx.board.moves {
+        if !is_capture(m, &ctx.board.board) {
             continue;
         }
 
         let next_ctx = ctx.apply_move_new(&m);
-        ctx.history.push(next_ctx.hash);
         let child = -quiescence_search(next_ctx, -beta, -alpha);
-        ctx.history.pop();
+        ctx.board.history_ref.pop();
 
         nodes += child.nodes + 1;
         if child.score > best_value {
             best_value = child.score;
         }
-        if child.score > alpha {
-            alpha = child.score;
+        if best_value > alpha {
+            alpha = best_value;
         }
         if alpha >= beta {
             break;
@@ -159,9 +152,9 @@ mod test {
         let signal = Arc::new(AtomicBool::new(false));
         let time = None;
         let depth = 1;
-        let history = MoveHistory::new();
+        let history = MoveHistory::new(10);
         let tt = Arc::new(TT::new(1 << 8));
-        let state = SearchContext::from_board(board, history, depth, time, signal, tt);
+        let state = SearchContext::create(board, history, time, signal, tt);
         let result = nega_max(state, depth, MIN_SCORE, -MIN_SCORE);
         assert_eq!(result.score, -CHECKMATE_SCORE);
     }
@@ -173,17 +166,11 @@ mod test {
         let time = None;
         let depth1 = 1;
         let depth2 = 4;
-        let history = MoveHistory::new();
+        let history = MoveHistory::new(10);
         let tt = Arc::new(TT::new(1 << 8));
-        let state1 = SearchContext::from_board(
-            board,
-            history.clone(),
-            depth1,
-            time,
-            signal.clone(),
-            tt.clone(),
-        );
-        let state2 = SearchContext::from_board(board, history, depth2, time, signal, tt);
+        let state1 =
+            SearchContext::create(board, history.clone(), time, signal.clone(), tt.clone());
+        let state2 = SearchContext::create(board, history, time, signal, tt);
         let result1 = nega_max(state1, depth1, MIN_SCORE, -MIN_SCORE);
         let result2 = nega_max(state2, depth2, MIN_SCORE, -MIN_SCORE);
         assert!(result1.score < result2.score);
@@ -196,9 +183,9 @@ mod test {
         let signal = Arc::new(AtomicBool::new(false));
         let time = None;
         let depth = 3;
-        let history = MoveHistory::new();
+        let history = MoveHistory::new(10);
         let tt = Arc::new(TT::new(1 << 8));
-        let state = SearchContext::from_board(board, history, depth, time, signal, tt);
+        let state = SearchContext::create(board, history, time, signal, tt);
         let result = nega_max(state, depth, MIN_SCORE, -MIN_SCORE);
         assert_eq!(result.score, -CHECKMATE_SCORE + 2); // mate in 1 should be slightly better than mate in two
     }

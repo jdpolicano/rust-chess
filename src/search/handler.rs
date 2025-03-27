@@ -274,10 +274,9 @@ impl Search {
         depth: u8,
     ) -> MoveScore {
         let history = MoveHistory::from_vec(&request.position_history);
-        let ctx = SearchContext::from_board(
+        let ctx = SearchContext::create(
             request.board.make_move_new(*m),
             history,
-            1, // depth is 1 because we're searching one move in from the root.
             timeout,
             request.signal.clone(),
             request.tt.clone(),
