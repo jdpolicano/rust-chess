@@ -281,7 +281,8 @@ impl Search {
             request.signal.clone(),
             request.tt.clone(),
         );
-        let info = -nega_max(ctx, depth, MIN_SCORE, -MIN_SCORE);
+        let alpha = ctx.board_score();
+        let info = -nega_max(ctx, depth, alpha, -MIN_SCORE);
         MoveScore::new(*m, info)
     }
 }

@@ -1,3 +1,4 @@
+use crate::util::move_is_en_passant;
 use chess::{Board, ChessMove, MoveGen, NUM_PIECES};
 
 // MVV_VLA[victim][attacker]
@@ -11,18 +12,21 @@ pub const MVV_LVA: [[u8; NUM_PIECES + 1]; NUM_PIECES + 1] = [
     [0, 0, 0, 0, 0, 0, 0],       // victim None, attacker P, N, B, R, Q, K, None
 ];
 
-pub fn get_mvv_lva_score(victim: u8, attacker: u8) -> u8 {
+fn get_mvv_lva_score(victim: u8, attacker: u8) -> u8 {
     return MVV_LVA[victim as usize][attacker as usize];
 }
 
+fn score_move(m: &ChessMove, b: &Board) -> u8 {
+    if move_is_en_passant(m, b) {
+        return MVV_LVA[0][0];
+    }
+    let victim = b.piece_on(m.get_dest()).map(|p| p as u8).unwrap_or(6);
+    let attacker = b.piece_on(m.get_source()).map(|p| p as u8).unwrap();
+    return get_mvv_lva_score(victim, attacker);
+}
+
 pub fn sort_moves(board: &Board, moves: &mut Vec<ChessMove>) {
-    moves.sort_by(|a, b| {
-        let victim_a = board.piece_on(a.get_dest()).map(|p| p as u8).unwrap_or(6);
-        let attacker_a = board.piece_on(a.get_source()).map(|p| p as u8).unwrap();
-        let victim_b = board.piece_on(b.get_dest()).map(|p| p as u8).unwrap_or(6);
-        let attacker_b = board.piece_on(b.get_source()).map(|p| p as u8).unwrap();
-        get_mvv_lva_score(victim_b, attacker_b).cmp(&get_mvv_lva_score(victim_a, attacker_a))
-    });
+    moves.sort_by(|a, b| score_move(b, board).cmp(&score_move(a, board)));
 }
 
 #[cfg(test)]

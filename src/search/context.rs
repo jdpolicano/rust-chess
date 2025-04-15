@@ -12,6 +12,7 @@ use std::time::Instant;
 #[derive(Debug)]
 pub struct SearchContext {
     pub board: BoardState,
+    pub nodes: u64,
     pub time: Option<Instant>,
     pub signal: Arc<AtomicBool>,
     pub tt: Arc<TT>,
@@ -27,6 +28,7 @@ impl SearchContext {
     ) -> Self {
         return Self {
             board: BoardState::new(board, history),
+            nodes: 0,
             time,
             signal,
             tt,
@@ -41,6 +43,7 @@ impl SearchContext {
         let board = self.board.apply_move_new(m);
         return Self {
             board,
+            nodes: self.nodes + 1,
             time: self.time,
             signal: self.signal.clone(),
             tt: self.tt.clone(),

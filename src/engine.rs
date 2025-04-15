@@ -113,15 +113,17 @@ impl Engine {
     }
 
     fn handle_position(&mut self, fen: Option<String>, moves: Vec<ChessMove>) {
-        let mut board = Board::default();
-        if let Some(fen) = fen {
+        let mut board = if let Some(fen) = fen {
             let b = Board::from_str(&fen);
             if b.is_err() {
                 eprintln!("Error: {:?}", b.err().unwrap());
                 return;
             }
-            board = b.unwrap();
-        }
+            b.unwrap()
+        } else {
+            Board::default()
+        };
+
         self.moves = moves;
         self.positions = vec![board.get_hash()];
         for m in &self.moves {
@@ -152,7 +154,6 @@ impl Engine {
     }
 
     fn handle_stop(&mut self) {
-        println!("lets try to stop...");
         self.search_sig.store(true, Ordering::Relaxed);
         // wait for the message back before continuing
         let msg = self.search_handler.receiver().recv();

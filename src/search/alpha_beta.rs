@@ -54,7 +54,7 @@ pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, beta: i16) ->
     let mut max_score = MIN_SCORE;
     let mut nodes = 0;
     let mut term_count = 0;
-    let mut best_move = ChessMove::default();
+
     ctx.board.sort_moves();
     for m in &ctx.board.moves {
         // create a new context with the move applied
@@ -69,7 +69,6 @@ pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, beta: i16) ->
         // update the best move and score
         if child.score > max_score {
             max_score = child.score;
-            best_move = *m;
         }
         if max_score > alpha {
             alpha = max_score;
@@ -108,9 +107,11 @@ pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, beta: i16) -> N
         return NegaMaxResult::new_draw();
     }
 
-    ctx.board.sort_moves();
     let mut best_value = stand_pat;
     let mut nodes = 0;
+    let mut term_count = 0;
+
+    ctx.board.sort_moves();
     for m in &ctx.board.moves {
         if !is_capture(m, &ctx.board.board) {
             continue;
@@ -121,6 +122,7 @@ pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, beta: i16) -> N
         ctx.board.history_ref.pop();
 
         nodes += child.nodes + 1;
+        term_count += child.nodes + 1;
         if child.score > best_value {
             best_value = child.score;
         }
@@ -129,6 +131,12 @@ pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, beta: i16) -> N
         }
         if alpha >= beta {
             break;
+        }
+        if term_count >= CHECK_TERMINATION {
+            term_count = 0;
+            if task_must_stop(&ctx.time, &ctx.signal) {
+                break;
+            }
         }
     }
 

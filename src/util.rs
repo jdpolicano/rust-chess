@@ -8,12 +8,12 @@ pub fn is_capture(m: &ChessMove, b: &Board) -> bool {
     return piece_is_on_dest(m, b) || move_is_en_passant(m, b);
 }
 
-fn piece_is_on_dest(m: &ChessMove, b: &Board) -> bool {
+pub fn piece_is_on_dest(m: &ChessMove, b: &Board) -> bool {
     let op = BitBoard::from_square(m.get_dest());
     (b.combined() & op) != EMPTY
 }
 
-fn move_is_en_passant(m: &ChessMove, b: &Board) -> bool {
+pub fn move_is_en_passant(m: &ChessMove, b: &Board) -> bool {
     if let Some(ep) = b.en_passant() {
         return m.get_dest() == ep;
     }

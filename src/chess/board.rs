@@ -52,8 +52,8 @@ impl BoardState {
             )
         } else {
             (
-                self.b_position + position_diff,
                 self.w_position + capture_diff,
+                self.b_position + position_diff,
             )
         };
         let board = self.board.make_move_new(*m);
