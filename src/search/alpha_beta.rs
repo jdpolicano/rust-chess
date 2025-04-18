@@ -38,11 +38,11 @@ impl Neg for NegaMaxResult {
 }
 
 pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, beta: i16) -> NegaMaxResult {
-    if ctx.board.checkmate {
+    if ctx.bs.checkmate {
         return NegaMaxResult::new_checkmate(depth);
     }
 
-    if ctx.board.stalemate || ctx.board.check_threefold() {
+    if ctx.bs.stalemate || ctx.bs.check_threefold() {
         return NegaMaxResult::new_draw();
     }
 
@@ -55,14 +55,14 @@ pub fn nega_max(mut ctx: SearchContext, depth: u8, mut alpha: i16, beta: i16) ->
     let mut nodes = 0;
     let mut term_count = 0;
 
-    ctx.board.sort_moves();
-    for m in &ctx.board.moves {
+    ctx.bs.sort_moves();
+    for m in &ctx.bs.moves {
         // create a new context with the move applied
         // perform the nega_max search on the new context
         // remove the move from the history stack
         let next_ctx = ctx.apply_move_new(&m);
         let child = -nega_max(next_ctx, depth - 1, -beta, -alpha);
-        ctx.board.history_ref.pop();
+        ctx.bs.history_ref.pop();
         // update stats for diagnostics
         nodes += child.nodes + 1;
         term_count += child.nodes + 1;
@@ -99,11 +99,11 @@ pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, beta: i16) -> N
         alpha = stand_pat;
     }
 
-    if ctx.board.checkmate {
+    if ctx.bs.checkmate {
         return NegaMaxResult::new_checkmate(0);
     }
 
-    if ctx.board.stalemate || ctx.board.check_threefold() {
+    if ctx.bs.stalemate || ctx.bs.check_threefold() {
         return NegaMaxResult::new_draw();
     }
 
@@ -111,15 +111,15 @@ pub fn quiescence_search(mut ctx: SearchContext, mut alpha: i16, beta: i16) -> N
     let mut nodes = 0;
     let mut term_count = 0;
 
-    ctx.board.sort_moves();
-    for m in &ctx.board.moves {
-        if !is_capture(m, &ctx.board.board) {
+    ctx.bs.sort_moves();
+    for m in &ctx.bs.moves {
+        if !is_capture(m, &ctx.bs.board) {
             continue;
         }
 
         let next_ctx = ctx.apply_move_new(&m);
         let child = -quiescence_search(next_ctx, -beta, -alpha);
-        ctx.board.history_ref.pop();
+        ctx.bs.history_ref.pop();
 
         nodes += child.nodes + 1;
         term_count += child.nodes + 1;
